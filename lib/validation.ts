@@ -6,7 +6,7 @@ const action=z.discriminatedUnion('type',[
  z.object({type:z.literal('act'),move:z.enum(['fold','check','call','raise']),amount:z.number().int().min(1).max(100000000).optional(),expectedAction:z.number().int().nonnegative()}),
  z.object({type:z.literal('propose'),kind:z.enum(['bomb','bounty','sevenDeuce','ocean']),amount:z.number().int().min(0).max(100000)}),
  z.object({type:z.literal('vote'),voteId:z.uuid(),yes:z.boolean()}),
- z.object({type:z.literal('theme'),theme}),z.object({type:z.literal('sit'),out:z.boolean()}),
+ z.object({type:z.literal('theme'),theme}),z.object({type:z.literal('seats'),maxPlayers:z.number().int().min(2).max(10)}),z.object({type:z.literal('sit'),out:z.boolean()}),
  z.object({type:z.literal('rebuy')}),z.object({type:z.literal('leave')}),z.object({type:z.literal('cancelBounty')})
 ]);
 export const bodySchema=z.discriminatedUnion('op',[

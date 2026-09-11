@@ -6,11 +6,11 @@ A private, play-money Texas Hold’em website for 2–10 friends, ready for Verc
 
 - Server-authoritative no-limit Hold’em: blinds, betting streets, legal raises, all-ins, side pots, ties, and uncalled-bet refunds.
 - Four decks and synchronized room themes: Classic, Dark Mode, Astral, and Black & Gold Metalluxe.
-- Animated deals, card reveals, turn indicators, and winner announcements; reduced-motion support.
-- Configurable seats, free-form starting stacks and blinds, and optional 30/60/90-second turns or no timer.
+- Larger, brighter cards, animated deals and reveals, turn indicators, winner announcements, and an audible turn chime; reduced-motion support.
+- Configurable seats, free-form starting stacks and blinds, and optional 30/60/90-second turns or no timer. Hosts can resize a table between hands without removing seated players.
 - Private room links and invite codes, same-browser reconnects, and automatic host transfer after 90 seconds away.
 - Unanimous Bomb Pot, Bounty, 7-2 Game, and Ocean votes. Sit out or rebuy between hands.
-- Mobile and desktop layouts. All chips are fictional; there are no payments or deposits.
+- A table-first desktop layout with a compact action rail and game panels below, plus a touch-friendly mobile layout. All chips are fictional; there are no payments or deposits.
 
 ## Run locally
 
@@ -63,6 +63,7 @@ Active bounty and 7-2 lineups stay fixed. New players, leaving, and sitting out 
 - A timeout checks when possible, otherwise folds. The next room request advances expired actions. At least one active client is needed to keep a game moving.
 - An active player inherits hosting after the host has not checked in for 90 seconds.
 - Players leave, sit out, or rebuy only between hands. Closing a tab keeps the seat; the action timer prevents that seat from freezing play.
+- The host may change the table from 2–10 seats between hands, as long as there are enough seats for everyone currently at the table.
 - Rooms expire after seven days without recorded activity. Expired data is cleaned when new rooms are created or `npm run db:setup` runs.
 
 ## Architecture

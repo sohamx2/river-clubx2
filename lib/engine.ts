@@ -15,7 +15,7 @@ export function newDeck(){const deck=[...'shdc'].flatMap(s=>[...'23456789TJQKA']
 function newPlayer(name:string,tokenHash:string,seat:number,stack:number,now:number):Player{return{id:randomUUID(),tokenHash,name,seat,stack,bet:0,contributed:0,hole:[],inHand:false,folded:false,allIn:false,sittingOut:false,actedBet:null,lastAction:'Ready',lastSeen:now};}
 export function createRoom(code:string,name:string,playerName:string,tokenHash:string,settings:Settings,now=Date.now()):Room {
  const p=newPlayer(playerName,tokenHash,0,settings.startingStack,now);
- return{code,name,hostId:p.id,settings,players:[p],version:0,handNo:0,actionNo:0,dealerSeat:-1,phase:'waiting',deck:[],board:[],currentBet:0,minRaise:settings.bigBlind,turnId:null,deadline:null,vote:null,bombNext:null,oceanNext:null,isBomb:false,isOcean:false,bounty:null,sevenDeuce:null,result:null,logs:[{id:randomUUID(),text:`${p.name} opened the table.`}],receipts:[],createdAt:now};
+ return{code,name,hostId:p.id,settings:{...settings},players:[p],version:0,handNo:0,actionNo:0,dealerSeat:-1,phase:'waiting',deck:[],board:[],currentBet:0,minRaise:settings.bigBlind,turnId:null,deadline:null,vote:null,bombNext:null,oceanNext:null,isBomb:false,isOcean:false,bounty:null,sevenDeuce:null,result:null,logs:[{id:randomUUID(),text:`${p.name} opened the table.`}],receipts:[],createdAt:now};
 }
 export function joinRoom(r:Room,name:string,tokenHash:string,now=Date.now()) {
  const existing=r.players.find(p=>p.tokenHash===tokenHash);if(existing){existing.lastSeen=now;return;}
@@ -146,6 +146,14 @@ export function act(r:Room,hash:string,a:Action,now=Date.now()){
  if(a.type==='theme'){if(p.id!==r.hostId)fail('Only the host can change the deck.');r.settings.theme=a.theme;return;}
  if(!idle(r))fail('This option is available between hands.');
  if(a.type==='start'){if(p.id!==r.hostId)fail('Only the host can deal.');start(r,now);return;}
+ if(a.type==='seats'){
+  if(p.id!==r.hostId)fail('Only the host can change the number of seats.');
+  if(!Number.isSafeInteger(a.maxPlayers)||a.maxPlayers<2||a.maxPlayers>10)fail('Choose between 2 and 10 seats.');
+  if(a.maxPlayers<r.players.length)fail(`At least ${r.players.length} seats are needed for the players at the table.`);
+  const dealer=r.players.find(player=>player.seat===r.dealerSeat);const ordered=[...r.players].sort((x,y)=>x.seat-y.seat);
+  if(ordered.some(player=>player.seat>=a.maxPlayers))ordered.forEach((player,index)=>player.seat=index);
+  r.dealerSeat=dealer?.seat??-1;r.settings.maxPlayers=a.maxPlayers;log(r,`${p.name} changed the table to ${a.maxPlayers} seats.`);return;
+ }
  if(a.type==='propose'){
   if(r.vote)fail('There is already a vote open.');if(a.kind==='bounty'&&r.bounty)fail('A bounty round is already running.');if(a.kind==='sevenDeuce'&&r.sevenDeuce)fail('A 7-2 game is already running.');
   const ps=ready(r);if(ps.length<2||!ps.includes(p))fail('At least two ready players are needed.');
