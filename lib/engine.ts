@@ -28,16 +28,24 @@ export function joinRoom(r:Room,name:string,tokenHash:string,now=Date.now()) {
 export function authenticate(r:Room,hash:string){const p=r.players.find(p=>p.tokenHash===hash);if(!p)throw new GameError('Join this room to take a seat.',401);return p;}
 export function legal(r:Room,p:Player){const call=Math.min(p.stack,Math.max(0,r.currentBet-p.bet));const otherCanBet=active(r).some(o=>o.id!==p.id&&o.stack>0);return{call,minRaiseTo:r.currentBet<r.settings.bigBlind?r.settings.bigBlind:r.currentBet+r.minRaise,maxRaiseTo:p.bet+p.stack,canRaise:otherCanBet&&(p.actedBet===null||r.currentBet-p.actedBet>=r.minRaise)&&p.bet+p.stack>r.currentBet};}
 function turn(r:Room,p:Player,now:number){r.turnId=p.id;r.deadline=r.settings.turnSeconds===0?null:now+r.settings.turnSeconds*1000;}
-function cancelBounty(r:Room){if(!r.bounty)return;for(const id of r.bounty.players){const p=r.players.find(p=>p.id===id);if(p)p.stack+=r.bounty.reserve;}r.bounty=null;}
+function releaseLegacyBountyReserve(r:Room){
+ const reserve=r.bounty?.reserve;if(!reserve)return;
+ for(const id of r.bounty!.players){const p=r.players.find(p=>p.id===id);if(p)p.stack+=reserve;}
+}
+function cancelBounty(r:Room){if(!r.bounty)return;releaseLegacyBountyReserve(r);r.bounty=null;}
 function cancelSevenDeuce(r:Room){if(!r.sevenDeuce)return;for(const [id,reserve] of Object.entries(r.sevenDeuce.reserves)){const p=r.players.find(p=>p.id===id);if(p)p.stack+=reserve;}r.sevenDeuce=null;}
 function bountyResult(r:Room,winningIds:string[]){
  const b=r.bounty;if(!b)return;
  b.won=[...new Set([...b.won,...winningIds.filter(id=>b.players.includes(id))])];
  const remaining=b.players.filter(id=>!b.won.includes(id));
  if(remaining.length>1)return;
- if(!remaining.length){cancelBounty(r);log(r,'Bounty tied: everyone has a win. All reserved chips returned.');return;}
+ if(!remaining.length){cancelBounty(r);log(r,'Bounty tied: everyone earned a win, so nobody pays.');return;}
  const loser=r.players.find(p=>p.id===remaining[0])!;
- for(const id of b.players){const p=r.players.find(p=>p.id===id)!;if(id!==loser.id)p.stack+=b.reserve+b.amount;}
+ // Older rooms may already have escrowed this side bet. Restore that escrow first,
+ // then use the current direct-settlement rule for every bounty round.
+ releaseLegacyBountyReserve(r);
+ const opponents=b.players.filter(id=>id!==loser.id);loser.stack-=b.amount*opponents.length;
+ for(const id of opponents){const winner=r.players.find(p=>p.id===id);if(winner)winner.stack+=b.amount;}
  log(r,`${loser.name} was last without a win and paid ${b.amount.toLocaleString()} to each player. Bounty complete.`);r.bounty=null;
 }
 function sevenDeuceResult(r:Room,winningIds:string[]){
@@ -129,8 +137,8 @@ function approveVote(r:Room){
   r.bombNext={amount:v.amount,players:v.voters};log(r,`Bomb pot approved: ${v.amount} each on the next hand.`);
  }else if(v.kind==='bounty'){
   if(r.bounty)fail('A bounty round is already running.');
-  const reserve=v.amount*(ps.length-1);if(ps.some(p=>p.stack<=reserve))fail(`Everyone needs more than ${reserve} chips to reserve this bounty.`);
-  ps.forEach(p=>p.stack-=reserve);r.bounty={amount:v.amount,players:v.voters,won:[],reserve};log(r,`Bounty round started: ${v.amount} to each player. ${reserve} chips reserved per player.`);
+  const liability=v.amount*(ps.length-1);if(ps.some(p=>p.stack<liability))fail(`Everyone needs at least ${liability} chips to cover this bounty.`);
+  r.bounty={amount:v.amount,players:v.voters,won:[]};log(r,`Bounty round started: the last player without a win will pay ${v.amount} to each opponent.`);
  }else if(v.kind==='sevenDeuce'){
   if(r.sevenDeuce)fail('A 7-2 game is already running.');
   const reserve=v.amount*(ps.length-1);if(ps.some(p=>p.stack<=reserve))fail(`Everyone needs more than ${reserve} chips to guarantee every 7-2 payout.`);
@@ -145,6 +153,10 @@ export function act(r:Room,hash:string,a:Action,now=Date.now()){
  if(a.type==='act'){if(a.expectedAction!==r.actionNo)fail('The action changed. Review the table and try again.');bet(r,p,a.move,a.amount,now);return;}
  if(a.type==='theme'){if(p.id!==r.hostId)fail('Only the host can change the deck.');r.settings.theme=a.theme;return;}
  if(!idle(r))fail('This option is available between hands.');
+ if(a.type==='show'){
+  if(r.phase!=='showdown'||!r.result||!p.inHand||p.hole.length!==2)fail('You can show cards only after a hand you played.');
+  if(!r.result.revealed.includes(p.id)){r.result.revealed.push(p.id);log(r,`${p.name} shows ${p.hole.join(' ')}.`);}return;
+ }
  if(a.type==='start'){if(p.id!==r.hostId)fail('Only the host can deal.');start(r,now);return;}
  if(a.type==='seats'){
   if(p.id!==r.hostId)fail('Only the host can change the number of seats.');
@@ -167,7 +179,7 @@ export function act(r:Room,hash:string,a:Action,now=Date.now()){
   if(!a.yes){log(r,`${p.name} declined the vote.`);r.vote=null;return;}
   if(!v.yes.includes(p.id))v.yes.push(p.id);if(v.yes.length===v.voters.length)approveVote(r);return;
  }
- if(a.type==='cancelBounty'){if(p.id!==r.hostId)fail('Only the host can cancel side games.');cancelBounty(r);cancelSevenDeuce(r);r.bombNext=null;r.oceanNext=null;r.vote=null;log(r,'Side games cancelled. Reserved chips returned.');return;}
+ if(a.type==='cancelBounty'){if(p.id!==r.hostId)fail('Only the host can cancel side games.');cancelBounty(r);cancelSevenDeuce(r);r.bombNext=null;r.oceanNext=null;r.vote=null;log(r,'Side games cancelled. Any 7-2 reserves were returned.');return;}
  if(a.type==='rebuy'){if(p.stack>0)fail('Rebuy when your stack is empty.');p.stack=r.settings.startingStack;p.sittingOut=false;r.vote=null;r.bombNext=null;r.oceanNext=null;log(r,`${p.name} rebought ${p.stack.toLocaleString()} play chips.`);return;}
  if(a.type==='sit'||a.type==='leave'){
   if(r.bounty||r.sevenDeuce)fail('Finish or ask the host to cancel active side games before changing the lineup.');
@@ -179,6 +191,7 @@ export function act(r:Room,hash:string,a:Action,now=Date.now()){
 /** Called on reads as well as writes: deadlines survive serverless restarts. */
 export function tick(r:Room,now=Date.now()):boolean{
  let changed=false;
+ if(r.bounty?.reserve){releaseLegacyBountyReserve(r);delete r.bounty.reserve;log(r,'Bounty escrow released. Future payment will happen when the bounty ends.');changed=true;}
  if(r.vote&&r.vote.expiresAt<=now){r.vote=null;log(r,'The table vote expired.');changed=true;}
  if(r.turnId&&r.deadline&&r.deadline<=now){const p=r.players.find(p=>p.id===r.turnId)!;const move=r.currentBet>p.bet?'fold':'check';bet(r,p,move,undefined,now);log(r,`${p.name} timed out · automatic ${move}.`);changed=true;}
  const host=r.players.find(p=>p.id===r.hostId);if(host&&now-host.lastSeen>90000){const replacement=r.players.find(p=>p.id!==host.id&&now-p.lastSeen<30000);if(replacement){r.hostId=replacement.id;log(r,`${replacement.name} is now the host.`);changed=true;}}

@@ -48,13 +48,13 @@ Vercel’s [Hobby plan](https://vercel.com/docs/plans/hobby) is free for persona
 
 **Bomb pot:** Any ready player proposes an ante between hands. Every ready player must agree. The next hand collects the same ante from everyone, skips blinds and preflop betting, and opens the flop. Betting starts left of the button. A change in the lineup clears the queued bomb pot; the host can also cancel it from room settings.
 
-**Bounty:** The last original participant without a main-pot win pays the selected bounty to each opponent. Split main-pot winners each earn a win. Side-pot-only wins and uncalled refunds do not count. On unanimous approval, each player reserves `bounty × opponents` from their stack. Example: with 4 players and a bounty of 50, each reserves 150. Once three players have won a main pot, the last player’s 150 goes to the three winners, who also recover their own reserves. If a split pot gives all remaining players a win together, the round is a tie and all reserves are refunded.
+**Bounty:** The last original participant without a main-pot win pays the selected bounty to each opponent. Split main-pot winners each earn a win. Side-pot-only wins and uncalled refunds do not count. No chips are reserved when the vote passes. Once only one player remains without a win, the full bounty is deducted from that player and credited to every opponent. If a split pot gives all remaining players a win together, the round is a tie and nobody pays.
 
 **7-2 Game:** After a unanimous vote, every participant reserves enough chips to cover the selected payment to every other player. A player who wins the main pot while holding any seven and any deuce collects that amount from each opponent. Showdown wins and successful bluffs both count, and the qualifying hand is shown automatically. The game continues across hands. After a payout, reserves refill from player stacks; if anyone cannot refill, the game ends and every remaining reserve is returned.
 
 **Ocean:** A unanimous vote gives the next hand a sixth community card after the river, followed by another betting round. Players make the best five-card hand from their two hole cards and all six community cards. The queued Ocean is cleared if the lineup changes before the hand starts.
 
-Active bounty and 7-2 lineups stay fixed. New players, leaving, and sitting out wait until those games finish or the host cancels them. Host cancellation returns all reserves and also clears queued Bomb Pot and Ocean hands.
+Active bounty and 7-2 lineups stay fixed. New players, leaving, and sitting out wait until those games finish or the host cancels them. Host cancellation returns any 7-2 reserves and also clears queued Bomb Pot and Ocean hands.
 
 ## Reconnection and timeouts
 
