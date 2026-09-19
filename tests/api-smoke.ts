@@ -27,7 +27,7 @@ let steps=0;while(r.phase!=='showdown'&&steps++<100){client=clients.find(c=>c.id
 assert.equal(r.phase,'showdown');assert.equal(r.players.reduce((s,p)=>s+p.stack,0),20000);
 r=await post(clients[0],{op:'action',code,action:{type:'propose',kind:'bomb',amount:50}});
 const voteId=r.vote!.id;
-await Promise.all(clients.slice(1).map(c=>post(c,{op:'action',code,action:{type:'vote',voteId,yes:true}})));
+await Promise.all(clients.slice(1,-1).map(c=>post(c,{op:'action',code,action:{type:'vote',voteId,yes:true}})));
 r=await post(clients[0],{op:'action',code,action:{type:'start'}});
 assert.equal(r.phase,'flop');assert.equal(r.board.length,3);assert.equal(r.pot,500);assert.ok(r.players.every(p=>p.contributed===50));
 const badOrigin=await fetch(base+'/api/table',{method:'POST',headers:{'Content-Type':'application/json','x-river-client':'1',Origin:'https://untrusted.example'},body:'{}'});assert.equal(badOrigin.status,403);
