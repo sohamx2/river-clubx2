@@ -124,3 +124,6 @@
 
 /* Reserve a clean lane for the desktop action dock. */
 @media(min-width:901px){.table-stage .poker-table{width:75%;left:5%}.seat{left:var(--seat-dock-left)!important}}
+/* Double Barrel keeps both boards readable on the felt; Strip Club compacts five-card hands. */
+.double-barrel .table-center{display:flex;flex-direction:column;align-items:center;gap:8px}.double-barrel .board-wrap{display:flex;flex-direction:column;align-items:center;gap:3px}.board-label{font-size:9px;letter-spacing:.16em;color:var(--muted);font-weight:800}.double-barrel .community-cards .playing-card,.double-barrel .community-cards .card-slot{width:54px;height:79px}.strip-club .seat-cards{display:flex;justify-content:center}.strip-club .seat-cards .small-card{width:30px;height:45px}.discard-cards{display:flex;gap:5px;justify-content:center}.discard-cards button{border:0;background:transparent;padding:0;cursor:pointer}.discard-cards button:hover{transform:translateY(-4px)}
+@media(max-width:560px){.double-barrel .community-cards .playing-card,.double-barrel .community-cards .card-slot{width:25px;height:40px}.strip-club .seat-cards .small-card{width:24px;height:36px}}
