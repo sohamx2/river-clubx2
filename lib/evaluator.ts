@@ -19,7 +19,9 @@ function five(cards:string[]):number[] {
 }
 export function compare(a:number[],b:number[]):number {for(let i=0;i<Math.max(a.length,b.length);i++){const d=(a[i]||0)-(b[i]||0);if(d)return d;}return 0;}
 export function evaluate(cards:string[]):{rank:number[];name:string} {
- if(cards.length<5||cards.length>8||new Set(cards).size!==cards.length||cards.some(c=>! /^[2-9TJQKA][shdc]$/.test(c)))throw new Error('Expected 5–8 distinct poker cards.');
+ // Pocket Trips + Ocean gives each player nine available cards.  Evaluate all
+ // five-card choices rather than treating that valid format as a bad request.
+ if(cards.length<5||cards.length>9||new Set(cards).size!==cards.length||cards.some(c=>! /^[2-9TJQKA][shdc]$/.test(c)))throw new Error('Expected 5–9 distinct poker cards.');
  let best:number[]=[];
  for(let a=0;a<cards.length-4;a++)for(let b=a+1;b<cards.length-3;b++)for(let c=b+1;c<cards.length-2;c++)for(let d=c+1;d<cards.length-1;d++)for(let e=d+1;e<cards.length;e++){const hand=five([cards[a],cards[b],cards[c],cards[d],cards[e]]);if(!best.length||compare(hand,best)>0)best=hand;}
  return{rank:best,name:best[0]===8&&best[1]===14?'Royal flush':names[best[0]]};
