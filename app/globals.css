@@ -130,3 +130,231 @@
 /* Strip Club choices need full attention, separate from the compact action dock. */
 .strip-discard-overlay{position:fixed;inset:0;z-index:90;display:grid;place-items:center;padding:24px;background:#02070599;backdrop-filter:blur(5px)}.strip-discard-card{width:min(480px,calc(100vw - 32px));padding:28px;border:1px solid var(--line);border-radius:18px;background:var(--panel);box-shadow:0 28px 90px #000d;text-align:center}.strip-discard-card>span{font-size:11px;letter-spacing:.15em;color:var(--accent);font-weight:800}.strip-discard-card h2{margin:8px 0;font-size:28px}.strip-discard-card p{margin:0 0 22px;color:var(--muted)}.strip-discard-card .discard-cards{gap:10px}.strip-discard-card .discard-cards button{border-radius:8px}.strip-discard-card .discard-cards .playing-card{width:72px;height:104px}.strip-discard-card .discard-cards button:hover:not(:disabled){transform:translateY(-8px);filter:brightness(1.15)}
 @media(max-width:560px){.strip-discard-overlay{padding:16px}.strip-discard-card{padding:22px 14px}.strip-discard-card h2{font-size:24px}.strip-discard-card .discard-cards{gap:6px}.strip-discard-card .discard-cards .playing-card{width:53px;height:77px}}
+
+/* The active table is seen from a seat at the near rail. The camera scene is
+   clipped to its own panel so it never covers the controls or sections below. */
+.pov-surface {
+  --pov-dock: 290px;
+  --pov-rail: #473226;
+  --pov-rail-shadow: #140e0d;
+  --pov-track: #e3d5b1;
+  height: 690px;
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 22px;
+  background: linear-gradient(180deg, #0b1517 0%, var(--bg) 43%, var(--felt-edge) 100%);
+  perspective: none;
+}
+[data-theme=dark] .pov-surface { --pov-rail:#262b32; --pov-rail-shadow:#0c0d11; --pov-track:#b7c2d1; }
+[data-theme=astral] .pov-surface { --pov-rail:#29305a; --pov-rail-shadow:#070a22; --pov-track:#a8bcf1; }
+[data-theme=metalluxe] .pov-surface { --pov-rail:#4d3920; --pov-rail-shadow:#130e08; --pov-track:#e3c381; }
+.pov-room-backdrop {
+  position: absolute;
+  inset: 0 var(--pov-dock) 0 0;
+  z-index: 0;
+  pointer-events: none;
+  background:
+    radial-gradient(ellipse at 50% -8%, var(--glow), transparent 43%),
+    radial-gradient(circle at 12% 8%, #fff6 0 2px, transparent 4px),
+    radial-gradient(circle at 84% 7%, #fff3 0 2px, transparent 5px),
+    linear-gradient(180deg, #0008, transparent 34%);
+}
+.pov-room-backdrop::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, #0007, transparent 13%, transparent 87%, #0007);
+}
+.pov-surface .table-world,
+.pov-surface .table-stage {
+  display: block;
+  position: absolute;
+  inset: 0;
+  transform: none;
+  transform-style: flat;
+}
+.pov-surface .table-world {
+  right: var(--pov-dock);
+  z-index: 1;
+  overflow: hidden;
+  pointer-events: none;
+}
+.pov-surface .table-center { pointer-events: auto; }
+.pov-surface .poker-table,
+[data-theme=astral] .pov-surface .poker-table {
+  display: block;
+  position: absolute;
+  top: 17%;
+  left: -13%;
+  width: 126%;
+  height: 110%;
+  border: 15px solid var(--pov-rail);
+  border-radius: 48% 48% 0 0 / 20% 20% 0 0;
+  background:
+    radial-gradient(ellipse at 52% 69%, #ffffff13, transparent 62%),
+    linear-gradient(180deg, var(--felt-edge) 0%, var(--felt) 34%, var(--felt-edge) 100%);
+  box-shadow:
+    0 0 0 2px var(--pov-track),
+    0 20px 0 var(--pov-rail-shadow),
+    0 40px 45px #000b,
+    inset 0 20px 42px #0008,
+    inset 0 -50px 80px #0004;
+  transform: perspective(1050px) rotateX(12deg);
+  transform-origin: 50% 0;
+}
+.pov-surface .poker-table::before {
+  content: "";
+  display: block;
+  position: absolute;
+  inset: 8% 4% -12%;
+  border: 3px solid var(--pov-track);
+  border-radius: 48% 48% 0 0 / 20% 20% 0 0;
+  opacity: .76;
+  transform: none;
+  pointer-events: none;
+  z-index: 1;
+  box-shadow: 0 0 13px #0005;
+}
+.pov-surface .poker-table::after {
+  content: "";
+  display: block;
+  position: absolute;
+  inset: 0;
+  border: 0;
+  border-radius: inherit;
+  background: repeating-linear-gradient(3deg, #fff0 0 3px, #fff1 4px 4.5px);
+  opacity: .15;
+  transform: none;
+  pointer-events: none;
+  z-index: 1;
+}
+.pov-surface .table-stitch { display: none; }
+.pov-surface .table-center {
+  z-index: 2;
+  inset: 0;
+  justify-content: flex-start;
+  padding: clamp(118px, 17%, 158px) 12% 0;
+  transform: none;
+}
+.pov-surface .pot-display {
+  min-height: 0;
+  margin: 0 0 14px;
+  padding: 6px 18px;
+  border: 1px solid #ffffff27;
+  border-radius: 999px;
+  background: #050c0ab8;
+  box-shadow: 0 8px 18px #0005;
+}
+.pov-surface .pot-display strong { font-size: 22px; }
+.pov-surface .community-cards { gap: 6px; margin: 0; transform: none; }
+.pov-surface .community-cards .playing-card,
+.pov-surface .community-cards .card-slot {
+  width: clamp(48px, 4.8vw, 69px);
+  height: clamp(69px, 6.9vw, 99px);
+  box-shadow: 0 12px 24px #000a, 0 0 13px #fff3;
+}
+.pov-surface .board-wrap + .board-wrap { margin-top: 10px; }
+.pov-surface .waiting-message {
+  margin-top: 22px;
+  padding: 18px 24px;
+  border: 1px solid #ffffff2d;
+  border-radius: 16px;
+  background: #07130fa6;
+  backdrop-filter: blur(8px);
+  box-shadow: 0 18px 42px #0006;
+}
+.pov-seat-layer {
+  position: absolute;
+  inset: 0 var(--pov-dock) 0 0;
+  z-index: 5;
+  pointer-events: none;
+}
+.pov-seat-layer .seat {
+  left: var(--pov-left) !important;
+  top: var(--pov-top) !important;
+  z-index: var(--seat-z);
+  pointer-events: auto;
+  transform: translate(-50%, -50%) scale(var(--pov-scale));
+  transform-origin: center;
+}
+.pov-seat-layer .seat:not(.my-seat) .chair-back {
+  display: block;
+  top: -13px;
+  height: 57px;
+  opacity: .9;
+}
+.pov-seat-layer .seat:not(.my-seat) .seat-info {
+  background: #0c1112de;
+  backdrop-filter: blur(8px);
+}
+.pov-seat-layer .my-seat { width: 210px; }
+.pov-seat-layer .my-seat .seat-info {
+  width: 190px;
+  margin: auto;
+  border-color: var(--accent);
+  background: #0d1715ef;
+  box-shadow: 0 15px 35px #000a, 0 0 18px var(--glow);
+}
+.pov-seat-layer .my-seat .seat-cards { gap: 5px; margin-bottom: 4px; }
+.pov-seat-layer .my-seat .small-card { width: 63px; height: 91px; }
+.pov-seat-layer .my-seat .small-card .card-corner { font-size: 19px; }
+.pov-seat-layer .my-seat .small-card .card-suit { font-size: 34px; }
+.strip-club .pov-seat-layer .my-seat .small-card { width: 37px; height: 55px; }
+.pov-surface.double-barrel .community-cards .playing-card,
+.pov-surface.double-barrel .community-cards .card-slot { width: 54px; height: 79px; }
+[data-theme=astral] .pov-surface .poker-table {
+  background:
+    radial-gradient(circle at 17% 18%, #fff 0 1px, transparent 2px),
+    radial-gradient(circle at 74% 28%, #b9e3ff 0 1px, transparent 2px),
+    radial-gradient(circle at 45% 59%, #e3c8ff 0 1px, transparent 2px),
+    radial-gradient(ellipse at 62% 56%, #7648b54d, transparent 48%),
+    linear-gradient(180deg, var(--felt-edge), var(--felt) 40%, var(--felt-edge));
+}
+.pov-surface .vote-overlay { right: var(--pov-dock); z-index: 70; }
+.pov-surface .strip-discard-overlay { z-index: 90; }
+
+@media (max-width: 900px) {
+  .pov-surface { --pov-dock: 190px; height: 600px; }
+  .pov-surface .table-world { right: var(--pov-dock); }
+  .pov-surface .poker-table { top: 19%; left: -17%; width: 134%; height: 106%; }
+  .pov-surface .table-center { padding-top: 18%; }
+  .pov-seat-layer .seat { left: var(--pov-mobile-left) !important; top: var(--pov-mobile-top) !important; }
+  .pov-seat-layer .my-seat { width: 180px; }
+  .pov-seat-layer .my-seat .seat-info { width: 165px; }
+  .pov-seat-layer .my-seat .small-card { width: 50px; height: 73px; }
+  .pov-surface .community-cards .playing-card,
+  .pov-surface .community-cards .card-slot { width: 47px; height: 68px; }
+}
+@media (max-width: 560px) {
+  .pov-surface,
+  .in-room .pov-surface,
+  .in-room .pov-surface.players-8,
+  .in-room .pov-surface.players-9,
+  .in-room .pov-surface.players-10 { --pov-dock: 128px; height: 520px; }
+  .pov-surface .poker-table { top: 21%; left: -24%; width: 148%; height: 104%; border-width: 9px; }
+  .pov-surface .poker-table::before { border-width: 2px; }
+  .pov-surface .table-center { padding: 22% 6% 0; }
+  .pov-surface .pot-display { padding: 4px 10px; margin-bottom: 7px; }
+  .pov-surface .pot-display strong { font-size: 15px; }
+  .pov-surface .community-cards { gap: 2px; }
+  .pov-surface .community-cards .playing-card,
+  .pov-surface .community-cards .card-slot,
+  .pov-surface .ocean-board .playing-card,
+  .pov-surface .ocean-board .card-slot { width: 27px; height: 42px; }
+  .pov-surface .community-cards .card-corner { font-size: 10px; }
+  .pov-surface .community-cards .card-suit { font-size: 16px; }
+  .pov-surface.double-barrel .table-center { padding-top: 17%; }
+  .pov-surface.double-barrel .community-cards .playing-card,
+  .pov-surface.double-barrel .community-cards .card-slot { width: 24px; height: 37px; }
+  .pov-surface .waiting-message { margin-top: 26px; padding: 11px; }
+  .pov-surface .waiting-message h2 { font-size: 19px; }
+  .pov-surface .waiting-message p { font-size: 10px; }
+  .pov-seat-layer .seat { transform: translate(-50%, -50%) scale(calc(var(--pov-scale) * .78)); }
+  .pov-seat-layer .my-seat { width: 132px; }
+  .pov-seat-layer .my-seat .seat-info { width: 128px; }
+  .pov-seat-layer .my-seat .small-card { width: 42px; height: 61px; }
+  .strip-club .pov-seat-layer .my-seat .small-card { width: 26px; height: 40px; }
+  .pov-seat-layer .seat:not(.my-seat) .chair-back { height: 43px; }
+}
