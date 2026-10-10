@@ -2,13 +2,14 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {act,createRoom,joinRoom,legal,newDeck,settle,tick,view} from '../lib/engine';
 import {compare,evaluate} from '../lib/evaluator';
-import type {Room,Settings} from '../lib/types';
+import { defaultSideGameAmount } from '../lib/presentation';
+import type {Room,Settings,VoteKind} from '../lib/types';
 const settings:Settings={theme:'classic',maxPlayers:10,startingStack:1000,smallBlind:10,bigBlind:20,turnSeconds:30};
 function table(n=3){const r=createRoom('ABC234','Test table','Player 0','token0',settings,1000);for(let i=1;i<n;i++)joinRoom(r,`Player ${i}`,`token${i}`,1000);return r;}
 function start(r:Room){act(r,r.players.find(p=>p.id===r.hostId)!.tokenHash,{type:'start'},1000);}
 function move(r:Room,kind:'call'|'check'|'fold'|'raise',amount?:number){const p=r.players.find(p=>p.id===r.turnId)!;act(r,p.tokenHash,{type:'act',move:kind,amount,expectedAction:r.actionNo},1100);}
 function passive(r:Room){let steps=0;while(r.phase!=='showdown'&&steps++<300){const p=r.players.find(p=>p.id===r.turnId)!;if(r.stripDiscard)act(r,p.tokenHash,{type:'discard',card:p.hole[0],expectedAction:r.actionNo},1100);else move(r,r.currentBet>p.bet?'call':'check');}assert.equal(r.phase,'showdown');}
-function approve(r:Room,kind:'bomb'|'bounty'|'sevenDeuce'|'ocean'|'dieRiver'|'pocketTrips'|'doubleBarrel'|'stripClub',amount=0){act(r,'token0',{type:'propose',kind,amount},1000);for(const p of r.players.slice(1)){if(!r.vote)break;act(r,p.tokenHash,{type:'vote',voteId:r.vote.id,yes:true},1000);}}
+function approve(r:Room,kind:VoteKind,amount=0){act(r,'token0',{type:'propose',kind,amount},1000);for(const p of r.players.slice(1)){if(!r.vote)break;act(r,p.tokenHash,{type:'vote',voteId:r.vote.id,yes:true},1000);}}
 const total=(r:Room)=>r.players.reduce((s,p)=>s+p.stack+(r.phase==='showdown'||r.phase==='waiting'?0:p.contributed),0)+(r.bounty?.reserve?r.bounty.reserve*r.bounty.players.length:0)+(r.sevenDeuce?.reserves?Object.values(r.sevenDeuce.reserves).reduce((s,n)=>s+n,0):0);
 test('52 unique cards, unbiased Fisher–Yates shuffle input',()=>{for(let i=0;i<20;i++){const deck=newDeck();assert.equal(deck.length,52);assert.equal(new Set(deck).size,52);}});
 test('hand evaluation orders all categories and recognizes the wheel',()=>{
@@ -63,4 +64,51 @@ test('random legal actions conserve chips and finish 500 hands, including all-in
   while(r.phase!=='showdown'&&steps++<500){const p=r.players.find(p=>p.id===r.turnId)!;const l=legal(r,p);const rand=random();if(rand<.15)move(r,'fold');else if(rand<.4&&l.canRaise){const amount=rand<.22?l.maxRaiseTo:Math.min(l.maxRaiseTo,l.minRaiseTo+Math.floor(random()*Math.max(0,l.maxRaiseTo-l.minRaiseTo)));move(r,'raise',amount);}else move(r,l.call?'call':'check');assert.equal(total(r),before);assert.ok(r.players.every(p=>p.stack>=0&&Number.isSafeInteger(p.stack)));}
   assert.equal(r.phase,'showdown');assert.equal(total(r),before);
  }
+});
+
+function reachTurn(r:Room){let n=0;while(r.phase!=='turn'&&n++<100)move(r,r.currentBet>r.players.find(p=>p.id===r.turnId)!.bet?'call':'check');assert.equal(r.phase,'turn');}
+function rigRiver(r:Room,reds:number){
+ const red=r.deck.filter(c=>/[hd]$/.test(c)).slice(0,reds),black=r.deck.find(c=>/[sc]$/.test(c))!;
+ assert.equal(red.length,reds);const used=[...red,black];const remaining=r.deck.filter(c=>!used.includes(c));const burn=remaining.pop()!;
+ r.deck=[...remaining,black,...red.slice().reverse(),burn];return{red,black};
+}
+test('Red River draws a red chain before a single river betting round',()=>{
+ const r=table();approve(r,'redRiver');start(r);reachTurn(r);const {red,black}=rigRiver(r,3);
+ while(r.phase==='turn')move(r,'check');assert.equal(r.phase,'river');assert.deepEqual(r.board.slice(4),[...red,black]);assert.equal(r.board.length,8);assert.ok(r.turnId);
+ passive(r);assert.equal(total(r),3000);assert.equal(r.result!.board.length,8);assert.equal(r.logs.filter(log=>log.text==='River dealt.').length,1);
+});
+test('Red River with Pocket Trips evaluates more than nine cards and protects private cards',()=>{
+ const r=table();approve(r,'pocketTrips');approve(r,'redRiver');start(r);reachTurn(r);rigRiver(r,4);while(r.phase==='turn')move(r,'check');assert.equal(r.board.length,9);
+ assert.deepEqual(view(r,'token0').players[1].hole,['?','?','?']);passive(r);assert.equal(total(r),3000);assert.equal(r.result!.board.length,9);
+});
+test('a black Red River starts betting immediately without extra cards',()=>{const r=table();approve(r,'redRiver');start(r);reachTurn(r);rigRiver(r,0);while(r.phase==='turn')move(r,'check');assert.equal(r.board.length,5);passive(r);assert.equal(total(r),3000);});
+test('Red River runs out safely after folds and if the deck is exhausted',()=>{
+ const r=table(2);approve(r,'redRiver');start(r);reachTurn(r);rigRiver(r,2);move(r,'fold');assert.equal(r.phase,'showdown');assert.equal(r.board.length,7);assert.match(r.board.at(-1)!,/[sc]$/);assert.equal(total(r),2000);
+ const short=table();approve(short,'redRiver');start(short);reachTurn(short);const reds=short.deck.filter(c=>/[hd]$/.test(c)).slice(0,2);short.deck=reds;
+ while(short.phase==='turn')move(short,'check');assert.equal(short.phase,'river');assert.equal(short.deck.length,0);passive(short);assert.ok(short.logs.some(log=>log.text.includes('deck is exhausted')));assert.equal(total(short),3000);
+});
+test('Red River cannot queue alongside a conflicting board format; cancellation clears both new games',()=>{
+ const r=table();approve(r,'redRiver');assert.throws(()=>approve(r,'ocean'),/board format/);approve(r,'potOrNot');act(r,'token0',{type:'cancelBounty'});assert.equal(r.redRiverNext,null);assert.equal(r.potOrNotNext,null);approve(r,'ocean');assert.throws(()=>approve(r,'redRiver'),/board format/);
+});
+test('Pot or Not snapshots each street wager, credits blinds, and disables raises',()=>{
+ const r=table();approve(r,'potOrNot');start(r);assert.equal(r.currentBet,30);assert.equal(r.potOrNotBet,30);const p=r.players.find(p=>p.id===r.turnId)!;assert.equal(legal(r,p).canRaise,false);assert.throws(()=>move(r,'raise',60));move(r,'call');assert.equal(r.currentBet,30);move(r,'call');assert.equal(r.currentBet,30);move(r,'call');assert.equal(r.phase,'flop');assert.equal(r.currentBet,90);assert.equal(r.potOrNotBet,90);assert.deepEqual(r.players.map(p=>p.contributed),[30,30,30]);move(r,'call');assert.equal(r.currentBet,90);move(r,'call');assert.equal(r.currentBet,90);move(r,'call');assert.equal(r.phase,'turn');assert.equal(r.currentBet,360);passive(r);assert.equal(total(r),3000);
+});
+test('Pot or Not handles short all-ins, folding, and timeout without raising its wager',()=>{
+ const r=table(2);r.players[0].stack=25;const before=total(r);approve(r,'potOrNot');start(r);move(r,'call');assert.equal(r.currentBet,30);move(r,'call');assert.equal(r.phase,'showdown');assert.equal(total(r),before);
+ const folded=table(2);approve(folded,'potOrNot');start(folded);tick(folded,31001);assert.equal(folded.phase,'showdown');assert.equal(total(folded),2000);
+});
+test('Bomb pot, Strip Club, Red River and Pot or Not cooperate without skipping discards',()=>{
+ const r=table();for(const kind of ['bomb','stripClub','redRiver','potOrNot'] as const)approve(r,kind,kind==='bomb'?10:0);start(r);assert.equal(r.phase,'flop');assert.ok(r.stripDiscard);assert.equal(r.potOrNotBet,30);assert.throws(()=>move(r,'call'),/turn to bet/);passive(r);assert.ok(r.players.every(p=>p.hole.length===2));assert.equal(r.logs.filter(l=>l.text.includes('discarded a card')).length,9);assert.equal(total(r),3000);
+});
+test('side-game default is one percent of all chips, including the pot, with a minimum of one',()=>{
+ const r=table();assert.equal(defaultSideGameAmount(view(r,'token0')),30);start(r);assert.equal(defaultSideGameAmount(view(r,'token0')),30);passive(r);assert.equal(defaultSideGameAmount(view(r,'token0')),30);r.players.forEach(p=>p.stack=1);assert.equal(defaultSideGameAmount(view(r,'token0')),1);
+});
+test('large-board evaluator recognizes the strongest five without enumerating combinations',()=>{
+ assert.deepEqual(evaluate(['As','Ks','Qs','Js','Ts','Ah','Ad','Ac','Kh','Kd','Kc','2d','3d']).rank,[8,14]);
+ assert.deepEqual(evaluate(['As','Ah','Ad','Ks','Kh','Kd','Qs','Qh','Qd','2c']).rank,[6,14,13]);
+ assert.deepEqual(evaluate(['As','Ks','9s','7s','4s','Ah','Kh','Qh','9h','6h','3d']).rank,[5,14,13,12,9,6]);
+ assert.deepEqual(evaluate(newDeck()).rank,[8,14]);
+});
+test('Pot or Not does not invent a preflop wager when both blinds are already all in',()=>{
+ const r=table();r.players[1].stack=10;r.players[2].stack=7;const before=total(r);approve(r,'potOrNot');start(r);assert.equal(r.currentBet,10);assert.equal(r.potOrNotBet,10);assert.equal(legal(r,r.players[0]).call,10);move(r,'call');assert.equal(r.phase,'showdown');assert.equal(total(r),before);
 });

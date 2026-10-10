@@ -5,11 +5,11 @@ A private, play-money Texas Hold’em website for 2–10 friends, ready for Verc
 ## Included
 
 - Server-authoritative no-limit Hold’em: blinds, betting streets, legal raises, all-ins, side pots, ties, and uncalled-bet refunds.
-- Four decks and synchronized room themes: Classic, Dark Mode, Astral, and Black & Gold Metalluxe.
+- Five decks and synchronized room themes: Classic, Dark Mode, Astral, Black & Gold Metalluxe, and Cyberpunk. Face cards have original mirrored court illustrations.
 - Larger, brighter cards, animated deals and reveals, turn indicators, winner announcements, and an audible turn chime; reduced-motion support.
 - Configurable seats, free-form starting stacks and blinds, and optional 30/60/90-second turns or no timer. Hosts can resize a table between hands without removing seated players.
 - Private room links and invite codes, same-browser reconnects, and automatic host transfer after 90 seconds away.
-- Unanimous Bomb Pot, Bounty, 7-2 Game, and Ocean votes. Sit out or rebuy between hands.
+- Side games pass with n−1 votes from the current session: Bomb Pot, Bounty, 7-2 Game, Ocean, Die on the River, Pocket Trips, Double Barrel, Strip Club, Red River, and Pot or Not. Sit out or rebuy between hands.
 - A table-first desktop layout with a compact action rail and game panels below, plus a touch-friendly mobile layout. All chips are fictional; there are no payments or deposits.
 
 ## Run locally
@@ -46,15 +46,29 @@ Vercel’s [Hobby plan](https://vercel.com/docs/plans/hobby) is free for persona
 
 ## How special games work
 
-**Bomb pot:** Any ready player proposes an ante between hands. Every ready player must agree. The next hand collects the same ante from everyone, skips blinds and preflop betting, and opens the flop. Betting starts left of the button. A change in the lineup clears the queued bomb pot; the host can also cancel it from room settings.
+**Bomb pot:** Any ready player proposes an ante between hands. All but one player in the session must agree. The next hand collects the same ante from everyone, skips blinds and preflop betting, and opens the flop. Betting starts left of the button. A change in the lineup clears the queued bomb pot; the host can also cancel it from room settings.
 
 **Bounty:** The last original participant without a main-pot win pays the selected bounty to each opponent. Split main-pot winners each earn a win. Side-pot-only wins and uncalled refunds do not count. No chips are reserved when the vote passes. Once only one player remains without a win, the full bounty is deducted from that player and credited to every opponent. If a split pot gives all remaining players a win together, the round is a tie and nobody pays.
 
-**7-2 Game:** After a unanimous vote, every participant reserves enough chips to cover the selected payment to every other player. A player who wins the main pot while holding any seven and any deuce collects that amount from each opponent. Showdown wins and successful bluffs both count, and the qualifying hand is shown automatically. The game continues across hands. After a payout, reserves refill from player stacks; if anyone cannot refill, the game ends and every remaining reserve is returned.
+**7-2 Game:** A player who wins the main pot holding any seven and any deuce collects the chosen payment directly from every opponent after the hand, up to each opponent's remaining stack. Showdown wins and successful bluffs both count, and the qualifying hand is shown automatically. The game stays active for the session until the host cancels it. There is no chip reserve.
 
-**Ocean:** A unanimous vote gives the next hand a sixth community card after the river, followed by another betting round. Players make the best five-card hand from their two hole cards and all six community cards. The queued Ocean is cleared if the lineup changes before the hand starts.
+**Ocean:** A successful vote gives the next hand a sixth community card after the river, followed by another betting round. Players make the best five-card hand from their two hole cards and all six community cards. The queued Ocean is cleared if the lineup changes before the hand starts.
 
-Active bounty and 7-2 lineups stay fixed. New players, leaving, and sitting out wait until those games finish or the host cancels them. Host cancellation returns any 7-2 reserves and also clears queued Bomb Pot and Ocean hands.
+**Die on the River:** After river betting, a die replaces the numbered community card on rolls 1–5; a 6 keeps the board intact.
+
+**Pocket Trips:** Each player receives three hole cards and uses the best five-card combination of their hole cards and the board.
+
+**Double Barrel:** Two boards share all betting. Each contribution tier is split between the boards, then paid to the winners on each board.
+
+**Strip Club:** Each player starts with five hole cards and discards one after the flop, turn, and river before betting. Discard choices appear in a centered overlay with community cards above them. Up to eight players can use this format with a standard deck.
+
+**Red River:** A red river keeps dealing extra community cards until a black card arrives, before the final betting round. Those extra cards are part of the same street and have no additional burns. In the rare case that the deck runs out, betting resumes on the final card. All available community cards count toward the best five-card hand.
+
+**Pot or Not:** The pot at the start of each betting round is the fixed total wager for that round. Each player pays it or folds; blinds count toward the preflop total, and short stacks can call all in. Raises are disabled, and no extra betting occurs when only one funded player remains.
+
+The default amount for games with a chip payment is one percent of all chips at the table, rounded down with a minimum of one chip. Players can edit it before proposing a vote. Showdowns present the live contenders together, revealing the first card and then the second one second later; extra hole cards follow at the same interval. Reduced-motion preferences bypass the animation.
+
+Choose one board format (Ocean, Die on the River, Double Barrel, or Red River) and one hole-card format (Pocket Trips or Strip Club) per hand. Double Barrel and Strip Club cannot run together. Bomb Pot and Pot or Not can accompany compatible formats. A bounty has a fixed roster; other session games allow new players. The host can cancel active side bets and queued formats between hands.
 
 ## Reconnection and timeouts
 
@@ -68,7 +82,7 @@ Active bounty and 7-2 lineups stay fixed. New players, leaving, and sitting out 
 
 ## Architecture
 
-`app/api/table/route.ts` authenticates, validates, and applies every action. `lib/engine.ts` is the authoritative state machine. `lib/evaluator.ts` ranks every possible five-card combination from up to eight available cards for Ocean hands. `lib/store.ts` persists the state in Neon JSONB and uses revision-based compare-and-swap, retrying conflicts across serverless instances. Requests carry idempotency IDs and poker-action counters to reject stale moves and avoid duplicate bets.
+`app/api/table/route.ts` authenticates, validates, and applies every action. `lib/engine.ts` is the authoritative state machine. `lib/evaluator.ts` ranks the best five cards directly from 5–52 distinct cards, including long Red River boards. `lib/store.ts` persists the state in Neon JSONB and uses revision-based compare-and-swap, retrying conflicts across serverless instances. Requests carry idempotency IDs and poker-action counters to reject stale moves and avoid duplicate bets.
 
 Clients receive only their own hole cards before showdown. The remaining deck, authentication hashes, and action receipts never enter public responses. Folded hands stay hidden at showdown. Room reads cannot be cached. CSRF checks protect mutations, and create/join endpoints are rate-limited. A person with the room link can join while a seat is available; these are private-by-invite rooms, not password-protected rooms. The server/database owner is trusted, as with most home-game apps.
 
@@ -92,7 +106,7 @@ Live Vercel/Neon deployment requires your accounts and has not been performed as
 
 - `components/PokerApp.tsx`: lobby, room, betting, voting, and sharing UI.
 - `components/Cards.tsx`: animated cards and deck selector.
-- `app/globals.css`: four themes and responsive layouts.
+- `app/globals.css`: five themes and responsive layouts.
 - `lib/engine.ts`, `lib/evaluator.ts`: poker and side-game rules.
 - `lib/store.ts`: persistent rooms and atomic updates.
 - `app/api/table/route.ts`: protected room API.

@@ -1,12 +1,12 @@
 import { z } from 'zod';
-const theme=z.enum(['classic','dark','astral','metalluxe']);
+const theme=z.enum(['classic','dark','astral','metalluxe','cyberpunk']);
 const name=z.string().trim().min(1).max(20).regex(/^[^\p{Cc}\p{Cf}<>]+$/u,'Use a simple display name.');
 const action=z.discriminatedUnion('type',[
  z.object({type:z.literal('start')}),
  z.object({type:z.literal('show')}),
  z.object({type:z.literal('act'),move:z.enum(['fold','check','call','raise']),amount:z.number().int().min(1).max(100000000).optional(),expectedAction:z.number().int().nonnegative()}),
  z.object({type:z.literal('discard'),card:z.string().regex(/^[2-9TJQKA][shdc]$/),expectedAction:z.number().int().nonnegative()}),
- z.object({type:z.literal('propose'),kind:z.enum(['bomb','bounty','sevenDeuce','ocean','dieRiver','pocketTrips','doubleBarrel','stripClub']),amount:z.number().int().min(0).max(100000)}),
+ z.object({type:z.literal('propose'),kind:z.enum(['bomb','bounty','sevenDeuce','ocean','dieRiver','pocketTrips','doubleBarrel','stripClub','redRiver','potOrNot']),amount:z.number().int().min(0).max(100000)}),
  z.object({type:z.literal('vote'),voteId:z.uuid(),yes:z.boolean()}),
  z.object({type:z.literal('theme'),theme}),z.object({type:z.literal('seats'),maxPlayers:z.number().int().min(2).max(10)}),z.object({type:z.literal('sit'),out:z.boolean()}),
  z.object({type:z.literal('rebuy')}),z.object({type:z.literal('leave')}),z.object({type:z.literal('cancelBounty')})
