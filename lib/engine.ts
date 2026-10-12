@@ -1,4 +1,5 @@
 import { randomInt, randomUUID } from 'node:crypto';
+import { REACTION_EMOJIS,REACTION_DURATION_MS,REACTION_COOLDOWN_MS } from './reactions';
 import { evaluate,compare } from './evaluator';
 import type { Action,Player,Room,RoomView,Settings } from './types';
 export class GameError extends Error { constructor(message:string,public status=400){super(message);} }
@@ -8,11 +9,17 @@ const active=(r:Room)=>r.players.filter(p=>p.inHand&&!p.folded);
 const ready=(r:Room)=>r.players.filter(p=>!p.sittingOut&&p.stack>0);
 function log(r:Room,text:string){r.logs.push({id:randomUUID(),text});r.logs=r.logs.slice(-50);}
 function next(r:Room,seat:number,list:Player[]):Player { return [...list].sort((a,b)=>((a.seat-seat+10)%10||10)-((b.seat-seat+10)%10||10))[0]; }
+function clearQueuedFormats(r:Room){r.vote=null;r.bombNext=null;r.oceanNext=null;r.dieRiverNext=null;r.pocketTripsNext=null;r.doubleBarrelNext=null;r.stripClubNext=null;r.redRiverNext=null;r.potOrNotNext=null;}
+function applyQueuedSeats(r:Room){
+ let changed=false,lineupChanged=false;
+ for(const player of r.players){if(player.sitNext==null)continue;const out=player.sitNext;player.sitNext=null;changed=true;if(player.sittingOut===out)continue;player.sittingOut=out;lineupChanged=true;log(r,`${player.name} ${out?'is sitting out':'is ready for the next hand'}.`);}
+ if(lineupChanged)clearQueuedFormats(r);return changed;
+}
 function pay(p:Player,n:number){const paid=Math.min(n,p.stack);p.stack-=paid;p.bet+=paid;p.contributed+=paid;p.allIn=p.stack===0;return paid;}
 function deal(r:Room,n:number){if(r.deck.length<n)fail('This side-game combination needs more than a 52-card deck can supply. Use fewer seats or choose a different format.');return Array.from({length:n},()=>r.deck.pop()!);}
 function streetCards(r:Room,n:number,board=r.board){deal(r,1);board.push(...deal(r,n));}
 export function newDeck(){const deck=[...'shdc'].flatMap(s=>[...'23456789TJQKA'].map(v=>v+s));for(let i=51;i>0;i--){const j=randomInt(i+1);[deck[i],deck[j]]=[deck[j],deck[i]];}return deck;}
-function newPlayer(name:string,tokenHash:string,seat:number,stack:number,now:number):Player{return{id:randomUUID(),tokenHash,name,seat,stack,bet:0,contributed:0,hole:[],inHand:false,folded:false,allIn:false,sittingOut:false,actedBet:null,lastAction:'Ready',lastSeen:now};}
+function newPlayer(name:string,tokenHash:string,seat:number,stack:number,now:number):Player{return{id:randomUUID(),tokenHash,name,seat,stack,bet:0,contributed:0,hole:[],inHand:false,folded:false,allIn:false,sittingOut:false,sitNext:null,netChips:0,actedBet:null,lastAction:'Ready',lastSeen:now};}
 export function createRoom(code:string,name:string,playerName:string,tokenHash:string,settings:Settings,now=Date.now()):Room {
  const p=newPlayer(playerName,tokenHash,0,settings.startingStack,now);
  return{code,name,hostId:p.id,settings:{...settings},players:[p],version:0,handNo:0,actionNo:0,dealerSeat:-1,phase:'waiting',deck:[],board:[],boardTwo:[],currentBet:0,minRaise:settings.bigBlind,turnId:null,deadline:null,vote:null,bombNext:null,oceanNext:null,dieRiverNext:null,pocketTripsNext:null,doubleBarrelNext:null,stripClubNext:null,redRiverNext:null,potOrNotNext:null,isRedRiver:false,isPotOrNot:false,potOrNotBet:0,isBomb:false,isOcean:false,isDieRiver:false,isPocketTrips:false,isDoubleBarrel:false,isStripClub:false,stripDiscard:null,dieRiverRoll:null,bounty:null,sevenDeuce:null,result:null,logs:[{id:randomUUID(),text:`${p.name} opened the table.`}],receipts:[],createdAt:now};
@@ -62,6 +69,8 @@ function sevenDeuceResult(r:Room,winningIds:string[]){
 }
 /** Settle each contribution tier independently; unmatched excess is a refund, never a hand win. */
 export function settle(r:Room){
+ // Committed chips still belong to the player's starting bankroll until this hand settles.
+ const before=new Map(r.players.map(p=>[p.id,p.stack+(p.inHand?p.contributed:0)+(r.bounty?.players.includes(p.id)?r.bounty.reserve||0:0)+(r.sevenDeuce?.reserves?.[p.id]||0)]));
  const players=r.players.filter(p=>p.inHand);const alive=active(r);
  const levels=[...new Set(players.map(p=>p.contributed).filter(Boolean))].sort((a,b)=>a-b);
  const payouts=new Map<string,{id:string;amount:number;hand:string}>();let previous=0;let mainWinners:string[]=[];
@@ -77,20 +86,22 @@ export function settle(r:Room){
  }
  const list=[...payouts.values()];const text=list.map(x=>`${players.find(p=>p.id===x.id)!.name} wins ${x.amount.toLocaleString()}${x.hand==='Uncontested'?'':` · ${x.hand}`}`).join(' / ')||'Uncalled chips returned.';
  r.result={text,winners:list.map(p=>p.id),payouts:list,board:[...r.board],...(r.isDoubleBarrel?{boardTwo:[...r.boardTwo]}:{}),revealed:[]};r.phase='showdown';r.turnId=null;r.deadline=null;log(r,text);bountyResult(r,mainWinners);sevenDeuceResult(r,mainWinners);
+ for(const p of r.players)p.netChips=(p.netChips||0)+p.stack-before.get(p.id)!;
+ applyQueuedSeats(r);
 }
 function runOutBoard(r:Room){
  const target=r.isOcean?6:5;
  while(r.board.length<target)streetCards(r,r.board.length===0?3:1);
  if(r.isDoubleBarrel)while(r.boardTwo.length<target)streetCards(r,r.boardTwo.length===0?3:1,r.boardTwo);
- extendRedRiver(r);
+ extendRedRiver(r);if(r.isDoubleBarrel)extendRedRiver(r,r.boardTwo,'Board II');
  log(r,'The remaining community cards were shown after the fold.');
 }
 /** Extra Red River cards belong to the same street, so no extra burns or bets. */
-function extendRedRiver(r:Room){
+function extendRedRiver(r:Room,board=r.board,label=r.isDoubleBarrel?'Board I':'Board'){
  if(!r.isRedRiver)return;
- while(/[hd]$/.test(r.board.at(-1)||'')){
-  if(!r.deck.length){log(r,'Red River: the deck is exhausted; betting resumes on the final card.');break;}
-  const card=deal(r,1)[0];r.board.push(card);log(r,`Red River: another card · ${card}.`);
+ while(/[hd]$/.test(board.at(-1)||'')){
+  if(!r.deck.length){log(r,`Red River · ${label}: the deck is exhausted; betting resumes on the final card.`);break;}
+  const card=deal(r,1)[0];board.push(card);log(r,`Red River · ${label}: another card · ${card}.`);
  }
 }
 function prepareStreet(r:Room,now:number){
@@ -118,7 +129,7 @@ function advance(r:Room,afterSeat:number,now:number){
  if(r.phase==='river')rollDieOnRiver(r);
  if(r.phase==='ocean'||r.phase==='river'&&!r.isOcean){settle(r);return;}
  r.phase=r.phase==='preflop'?'flop':r.phase==='flop'?'turn':r.phase==='turn'?'river':'ocean';streetCards(r,r.phase==='flop'?3:1);if(r.isDoubleBarrel)streetCards(r,r.phase==='flop'?3:1,r.boardTwo);
- if(r.phase==='river')extendRedRiver(r);
+ if(r.phase==='river'){extendRedRiver(r);if(r.isDoubleBarrel)extendRedRiver(r,r.boardTwo,'Board II');}
  log(r,`${r.phase[0].toUpperCase()+r.phase.slice(1)} dealt.`);
  if(prepareStreet(r,now))return;
  if(canAct.length<2){advance(r,r.dealerSeat,now);return;}
@@ -136,8 +147,8 @@ function start(r:Room,now:number){
  if(r.stripClubNext&&!sameIds(players.map(p=>p.id),r.stripClubNext.players))fail('The Strip Club lineup changed. Cancel it with a new vote or restore the lineup.');
  if(r.redRiverNext&&!sameIds(players.map(p=>p.id),r.redRiverNext.players))fail('The Red River lineup changed. Propose a new vote.');
  if(r.potOrNotNext&&!sameIds(players.map(p=>p.id),r.potOrNotNext.players))fail('The Pot or Not lineup changed. Propose a new vote.');
- const boardModes=[r.oceanNext,r.dieRiverNext,r.doubleBarrelNext,r.redRiverNext].filter(Boolean).length,handModes=[r.pocketTripsNext,r.stripClubNext].filter(Boolean).length;
- if(boardModes>1||handModes>1||r.doubleBarrelNext&&r.stripClubNext)fail('Choose one board format and one hole-card format per hand. Double Barrel and Strip Club cannot run together.');
+ const boardModes=[r.oceanNext,r.dieRiverNext,r.doubleBarrelNext||r.redRiverNext].filter(Boolean).length,handModes=[r.pocketTripsNext,r.stripClubNext].filter(Boolean).length;
+ if(boardModes>1||handModes>1||r.doubleBarrelNext&&r.stripClubNext)fail('Only Double Barrel and Red River can combine board formats. Choose one hole-card format; Double Barrel and Strip Club cannot run together.');
  if(r.stripClubNext&&players.length>8)fail('Strip Club supports up to 8 players with a standard 52-card deck.');
  const holes=r.stripClubNext?5:r.pocketTripsNext?3:2,boards=r.doubleBarrelNext?2:1,burns=boards*(r.oceanNext?4:3),community=boards*(r.oceanNext?6:5),die=r.dieRiverNext?1:0;
  if(players.length*holes+burns+community+die>52)fail('This side-game combination needs more than a 52-card deck can supply. Use fewer seats or choose a different format.');
@@ -147,7 +158,7 @@ function start(r:Room,now:number){
  const order=[...players].sort((a,b)=>((a.seat-r.dealerSeat+10)%10||10)-((b.seat-r.dealerSeat+10)%10||10));
  for(let i=0;i<(r.isStripClub?5:r.isPocketTrips?3:2);i++)for(const p of order)p.hole.push(...deal(r,1));
  log(r,`Hand #${r.handNo}${r.isBomb?' · Bomb pot':''}${r.isOcean?' · Ocean':''}${r.isDieRiver?' · Die on the River':''}${r.isPocketTrips?' · Pocket Trips':''}${r.isDoubleBarrel?' · Double Barrel':''}${r.isStripClub?' · Strip Club':''}${r.isRedRiver?' · Red River':''}${r.isPotOrNot?' · Pot or Not':''}.`);
- if(r.bombNext){const amount=r.bombNext.amount;for(const p of players){pay(p,amount);p.bet=0;p.lastAction=`Ante ${amount}`;}r.bombNext=null;r.phase='flop';streetCards(r,3);if(prepareStreet(r,now))return;advance(r,r.dealerSeat,now);return;}
+ if(r.bombNext){const amount=r.bombNext.amount;for(const p of players){pay(p,amount);p.bet=0;p.lastAction=`Ante ${amount}`;}r.bombNext=null;r.phase='flop';streetCards(r,3);if(r.isDoubleBarrel)streetCards(r,3,r.boardTwo);if(prepareStreet(r,now))return;advance(r,r.dealerSeat,now);return;}
  const dealer=players.find(p=>p.seat===r.dealerSeat)!;
  const sb=players.length===2?dealer:next(r,r.dealerSeat,players);const bb=next(r,sb.seat,players);
  pay(sb,r.settings.smallBlind);sb.lastAction=`SB ${sb.bet}`;pay(bb,r.settings.bigBlind);bb.lastAction=`BB ${bb.bet}`;
@@ -212,6 +223,15 @@ export function act(r:Room,hash:string,a:Action,now=Date.now()){
  if(a.type==='act'){if(a.expectedAction!==r.actionNo)fail('The action changed. Review the table and try again.');bet(r,p,a.move,a.amount,now);return;}
  if(a.type==='discard'){if(a.expectedAction!==r.actionNo)fail('The action changed. Review the table and try again.');discard(r,p,a.card,now);return;}
  if(a.type==='theme'){if(p.id!==r.hostId)fail('Only the host can change the deck.');r.settings.theme=a.theme;return;}
+ if(a.type==='react'){
+  if(!REACTION_EMOJIS.includes(a.emoji))fail('Choose one of the table reactions.');
+  if(p.reaction&&now-p.reaction.sentAt<REACTION_COOLDOWN_MS)fail('Give your next reaction a moment.');
+  p.reaction={id:randomUUID(),emoji:a.emoji,sentAt:now,expiresAt:now+REACTION_DURATION_MS};return;
+ }
+ if(a.type==='sit'){
+  if(!idle(r)){p.sitNext=a.out===p.sittingOut?null:a.out;log(r,p.sitNext==null?`${p.name} cancelled their seat change.`:`${p.name} will ${a.out?'sit out':'sit in'} after this hand.`);return;}
+  p.sitNext=null;if(p.sittingOut!==a.out){p.sittingOut=a.out;clearQueuedFormats(r);log(r,`${p.name} ${a.out?'is sitting out':'is ready to play'}.`);}return;
+ }
  if(!idle(r))fail('This option is available between hands.');
  if(a.type==='show'){
   if(r.phase!=='showdown'||!r.result||!p.inHand||p.hole.length<2)fail('You can show cards only after a hand you played.');
@@ -230,7 +250,8 @@ export function act(r:Room,hash:string,a:Action,now=Date.now()){
   if(r.vote)fail('There is already a vote open.');if(a.kind==='bounty'&&r.bounty)fail('A bounty round is already running.');if(a.kind==='sevenDeuce'&&r.sevenDeuce)fail('A 7-2 game is already running.');
   const ps=ready(r);if(ps.length<2||!ps.includes(p))fail('At least two ready players are needed.');
   const queuedBoard=[r.oceanNext,r.dieRiverNext,r.doubleBarrelNext,r.redRiverNext].some(Boolean),queuedHole=[r.pocketTripsNext,r.stripClubNext].some(Boolean);
-  if((['ocean','dieRiver','doubleBarrel','redRiver'] as string[]).includes(a.kind)&&queuedBoard)fail('A board format is already queued for the next hand.');
+  const conflictingBoard=(a.kind==='ocean'||a.kind==='dieRiver')&&queuedBoard||a.kind==='doubleBarrel'&&(r.oceanNext||r.dieRiverNext||r.doubleBarrelNext)||a.kind==='redRiver'&&(r.oceanNext||r.dieRiverNext||r.redRiverNext);
+  if(conflictingBoard)fail('A conflicting board format is already queued. Double Barrel and Red River can be combined.');
   if((['pocketTrips','stripClub'] as string[]).includes(a.kind)&&queuedHole)fail('A hole-card format is already queued for the next hand.');
   if(a.kind==='stripClub'&&ps.length>8)fail('Strip Club supports up to 8 players with a standard 52-card deck.');
   if(a.kind==='doubleBarrel'&&r.stripClubNext||a.kind==='stripClub'&&r.doubleBarrelNext)fail('Double Barrel and Strip Club cannot run together.');
@@ -247,17 +268,19 @@ export function act(r:Room,hash:string,a:Action,now=Date.now()){
   if(!v.yes.includes(p.id))v.yes.push(p.id);if(v.yes.length>=votesNeeded(v))approveVote(r);return;
  }
  if(a.type==='cancelBounty'){if(p.id!==r.hostId)fail('Only the host can cancel side games.');cancelBounty(r);cancelSevenDeuce(r);r.bombNext=null;r.oceanNext=null;r.dieRiverNext=null;r.pocketTripsNext=null;r.doubleBarrelNext=null;r.stripClubNext=null;r.redRiverNext=null;r.potOrNotNext=null;r.vote=null;log(r,'Side games cancelled.');return;}
- if(a.type==='rebuy'){if(p.stack>0)fail('Rebuy when your stack is empty.');p.stack=r.settings.startingStack;p.sittingOut=false;r.vote=null;r.bombNext=null;r.oceanNext=null;r.dieRiverNext=null;r.pocketTripsNext=null;r.doubleBarrelNext=null;r.stripClubNext=null;r.redRiverNext=null;r.potOrNotNext=null;log(r,`${p.name} rebought ${p.stack.toLocaleString()} play chips.`);return;}
- if(a.type==='sit'||a.type==='leave'){
+ if(a.type==='rebuy'){if(p.stack>0)fail('Rebuy when your stack is empty.');p.stack=r.settings.startingStack;p.sittingOut=false;p.sitNext=null;r.vote=null;r.bombNext=null;r.oceanNext=null;r.dieRiverNext=null;r.pocketTripsNext=null;r.doubleBarrelNext=null;r.stripClubNext=null;r.redRiverNext=null;r.potOrNotNext=null;log(r,`${p.name} rebought ${p.stack.toLocaleString()} play chips.`);return;}
+ if(a.type==='leave'){
   if(r.bounty)fail('Finish or ask the host to cancel the bounty game before changing the lineup.');
   r.vote=null;r.bombNext=null;r.oceanNext=null;r.dieRiverNext=null;r.pocketTripsNext=null;r.doubleBarrelNext=null;r.stripClubNext=null;r.redRiverNext=null;r.potOrNotNext=null;
-  if(a.type==='sit'){p.sittingOut=a.out;log(r,`${p.name} ${a.out?'is sitting out':'is ready to play'}.`);return;}
   r.players=r.players.filter(x=>x!==p);if(r.hostId===p.id)r.hostId=r.players[0]?.id||'';log(r,`${p.name} left the table.`);return;
  }
 }
 /** Called on reads as well as writes: deadlines survive serverless restarts. */
 export function tick(r:Room,now=Date.now()):boolean{
  let changed=false;
+ const legacy=r.players.filter(p=>p.netChips===undefined);if(legacy.length){for(const p of legacy){p.netChips=0;p.netFromUpdate=true;}log(r,'Session chip tracking started with this update; earlier hand results are not included.');changed=true;}
+ for(const p of r.players)if(p.reaction&&p.reaction.expiresAt<=now){delete p.reaction;changed=true;}
+ if(idle(r)&&applyQueuedSeats(r))changed=true;
  if(r.bounty?.reserve){releaseLegacyBountyReserve(r);delete r.bounty.reserve;log(r,'Bounty escrow released. Future payment will happen when the bounty ends.');changed=true;}
  if(r.sevenDeuce?.reserves){releaseLegacySevenDeuceReserve(r);log(r,'7-2 escrow released. Future payments happen after qualifying hands.');changed=true;}
  if(r.vote&&r.vote.expiresAt<=now){r.vote=null;log(r,'The table vote expired.');changed=true;}

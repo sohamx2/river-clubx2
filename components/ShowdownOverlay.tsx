@@ -11,15 +11,15 @@ export function ShowdownOverlay({room,onClose}:{room:RoomView;onClose:()=>void})
  useEffect(()=>{const dialog=ref.current;dialog?.showModal();return()=>dialog?.close();},[]);
  useEffect(()=>{
   if(reduced){setRevealed(count);setComplete(true);return;}
-  const timers=Array.from({length:count},(_,index)=>setTimeout(()=>setRevealed(index+1),450+index*1000));
-  timers.push(setTimeout(()=>setComplete(true),900+(count-1)*1000));
+  const timers=Array.from({length:count},(_,index)=>setTimeout(()=>setRevealed(index+1),450+index*2000));
+  timers.push(setTimeout(()=>setComplete(true),900+(count-1)*2000));
   return()=>timers.forEach(clearTimeout);
  },[count,reduced]);
  return <dialog ref={ref} className="showdown-overlay" aria-labelledby="showdown-title" onCancel={onClose}>
   <motion.div className="showdown-scene" initial={{opacity:0,scale:.95}} animate={{opacity:1,scale:1}} transition={{duration:reduced?0:.4}}>
    <button className="icon-button showdown-close" onClick={onClose} aria-label="Close showdown"><X size={20}/></button>
    <span className="showdown-kicker">THE MOMENT OF TRUTH</span><h2 id="showdown-title">Showdown</h2>
-   <div className="showdown-board" aria-label="Community cards">{room.board.map((card,index)=><Card card={card} key={card} index={index}/>)}</div>
+   {room.isDoubleBarrel&&<span className="board-label">BOARD I</span>}<div className="showdown-board" aria-label={room.isDoubleBarrel?'Board I community cards':'Community cards'}>{room.board.map((card,index)=><Card card={card} key={card} index={index}/>)}</div>
    {room.isDoubleBarrel&&<><span className="board-label">BOARD II</span><div className="showdown-board">{room.boardTwo.map((card,index)=><Card card={card} key={card} index={index}/>)}</div></>}
    <div className="showdown-contenders">{players.map(player=>{
     const won=room.result!.winners.includes(player.id);const payout=room.result!.payouts.find(payout=>payout.id===player.id);

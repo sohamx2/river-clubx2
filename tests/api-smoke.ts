@@ -8,6 +8,7 @@ const clients:Client[]=Array.from({length:10},()=>({cookie:''}));
 async function request(client:Client,body?:object,code?:string){const res=await fetch(body?base+'/api/table':base+'/api/table?code='+code,{method:body?'POST':'GET',headers:{'Content-Type':'application/json','x-river-client':'1',Origin:base,...(client.cookie?{Cookie:client.cookie}:{})},body:body?JSON.stringify(body):undefined});const cookie=res.headers.get('set-cookie');if(cookie)client.cookie=cookie.split(';')[0];const data=await res.json();return{res,data};}
 async function post(client:Client,body:object){const {res,data}=await request(client,{requestId:randomUUID(),...body});assert.equal(res.status,200,JSON.stringify(data));if(data.room)client.id=data.room.me;return data.room as RoomView;}
 const suffix=randomUUID().slice(0,6);
+let bankroll=20000;
 let r=await post(clients[0],{op:'create',name:'Host '+suffix,roomName:'API verification',settings:{theme:'classic',maxPlayers:10,startingStack:2000,smallBlind:10,bigBlind:20,turnSeconds:90}});
 const code=r.code;
 await Promise.all(clients.slice(1).map((c,i)=>post(c,{op:'join',code,name:`Friend ${i+1}`})));
@@ -39,7 +40,7 @@ async function finishHand(room:RoomView){
   room=await post(client,{op:'action',code,action:room.stripDiscard?{type:'discard',card:player.hole[0],expectedAction:room.actionNo}:{type:'act',move:room.currentBet>player.bet?'call':'check',expectedAction:room.actionNo}});
   if(room.isPotOrNot&&room.phase===phase)assert.equal(room.currentBet,fixed);
  }
- assert.equal(room.phase,'showdown');assert.equal(room.players.reduce((sum,player)=>sum+player.stack,0),20000);return room;
+ assert.equal(room.phase,'showdown');assert.equal(room.players.reduce((sum,player)=>sum+player.stack,0),bankroll);assert.equal(room.players.reduce((sum,player)=>sum+(player.netChips||0),0),0);return room;
 }
 async function approveFormat(kind:VoteKind){
  r=await post(clients[0],{op:'action',code,action:{type:'propose',kind,amount:0}});
@@ -51,8 +52,18 @@ r=await post(clients[0],{op:'action',code,action:{type:'theme',theme:'cyberpunk'
 for(const kind of ['pocketTrips','redRiver','potOrNot'] as const)await approveFormat(kind);
 r=await post(clients[0],{op:'action',code,action:{type:'start'}});assert.ok(r.isPocketTrips&&r.isRedRiver&&r.isPotOrNot);assert.equal(r.currentBet,30);
 r=await finishHand(r);assert.ok(r.board.length>=5);assert.ok(r.players.every(player=>player.hole.length===3));
+const nets=new Map(r.players.map(player=>[player.id,player.netChips]));
+for(const player of [...r.players])if(player.stack<=0){bankroll+=r.settings.startingStack-player.stack;r=await post(clients.find(client=>client.id===player.id)!,{op:'action',code,action:{type:'rebuy'}});assert.equal(r.players.find(p=>p.id===player.id)!.netChips,nets.get(player.id));}
+const actionBeforeReaction=r.actionNo;r=await post(clients[0],{op:'action',code,action:{type:'react',emoji:'🔥'}});assert.equal(r.actionNo,actionBeforeReaction);
+const audience=(await request(clients[1],undefined,code)).data.room as RoomView;assert.equal(audience.players.find(p=>p.id===clients[0].id)!.reaction?.emoji,'🔥');
+for(const kind of ['redRiver','doubleBarrel'] as const)await approveFormat(kind);
+r=await post(clients[0],{op:'action',code,action:{type:'start'}});assert.ok(r.isRedRiver&&r.isDoubleBarrel);const turnBeforeSit=r.turnId,actionBeforeSit=r.actionNo;
+r=await post(clients[0],{op:'action',code,action:{type:'sit',out:true}});const host=r.players.find(p=>p.id===clients[0].id)!;assert.equal(host.sittingOut,false);assert.equal(host.sitNext,true);assert.equal(r.turnId,turnBeforeSit);assert.equal(r.actionNo,actionBeforeSit);
+r=await finishHand(r);assert.ok(r.board.length>=5&&r.boardTwo.length>=5);assert.equal(r.players.find(p=>p.id===clients[0].id)!.sittingOut,true);
+r=await post(clients[0],{op:'action',code,action:{type:'start'}});assert.equal(r.players.find(p=>p.id===clients[0].id)!.inHand,false);
+r=await post(clients[0],{op:'action',code,action:{type:'sit',out:false}});assert.equal(r.players.find(p=>p.id===clients[0].id)!.sitNext,false);r=await finishHand(r);assert.equal(r.players.find(p=>p.id===clients[0].id)!.sittingOut,false);
 const badOrigin=await fetch(base+'/api/table',{method:'POST',headers:{'Content-Type':'application/json','x-river-client':'1',Origin:'https://untrusted.example'},body:'{}'});assert.equal(badOrigin.status,403);
 const noHeader=await fetch(base+'/api/table',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});assert.equal(noHeader.status,403);
 const html=await fetch(base+'/');assert.equal(html.status,200);assert.ok((await html.text()).includes('Poker with'));
-console.log('PASS: 10 independent sessions; concurrent joins and votes; duplicate-action protection; hidden-card isolation; full hand; chip conservation; bomb pot; Cyberpunk; Red River + Pocket Trips + Pot or Not; CSRF checks; homepage.');
+console.log('PASS: 10 independent sessions; concurrent joins and votes; duplicate-action protection; hidden-card isolation; full hand; chip conservation; bomb pot; Cyberpunk; Red River + Pocket Trips + Pot or Not; both Red River boards; queued seats; emoji reactions; net across rebuys; CSRF checks; homepage.');
 console.log('Test room:',code);

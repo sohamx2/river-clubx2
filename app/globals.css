@@ -401,3 +401,35 @@
 @media(max-width:560px){.showdown-overlay{padding:12px}.showdown-scene{padding:40px 0 20px}.showdown-scene h2{font-size:44px;margin-bottom:14px}.showdown-kicker{font-size:9px}.showdown-contenders{grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}.showdown-player{padding:12px 5px 8px}.showdown-player>strong{font-size:13px}.showdown-hole{gap:3px;margin:12px 0}.showdown-hole .playing-card{width:43px;height:63px}.showdown-hole .card-corner{font-size:14px}.showdown-hole .card-corner i{font-size:10px}.showdown-hole .card-suit{font-size:25px}.showdown-board .playing-card{width:34px;height:50px}.showdown-result{font-size:13px}.pov-surface .extended-board{max-width:95%}}
 .strip-discard-overlay{width:100vw;height:100dvh;max-width:none;max-height:none;margin:0;border:0;color:inherit;overflow:auto}.strip-discard-overlay::backdrop{background:#02070555;backdrop-filter:blur(3px)}
 .pov-surface .extended-board{display:grid;grid-template-columns:repeat(5,auto);justify-content:center}
+
+/* Session profit survives rebuys and includes side-game transfers. */
+.player-ledger{border-top:1px solid var(--line);margin-top:18px;padding-top:14px}.player-ledger table{width:100%;border-collapse:collapse;font-size:12px;font-variant-numeric:tabular-nums}.player-ledger caption{text-align:left;color:var(--accent);font-size:11px;margin-bottom:12px}.player-ledger th,.player-ledger td{padding:8px 0;border-bottom:1px solid var(--line);text-align:right}.player-ledger th:first-child{text-align:left;max-width:140px;overflow-wrap:anywhere;padding-right:8px}.player-ledger thead th{font-weight:500;font-size:10px;color:var(--muted)}.player-ledger tbody th{font-weight:500}.player-ledger small{color:var(--muted);font-size:9px}.player-ledger td+td{padding-left:12px}.net-up{color:var(--accent)}.net-down{color:#ffabb0}.net-even{color:var(--muted)}.stack-note{font-size:11px;line-height:1.5;color:var(--muted);margin:12px 0 0}.queued-seat-note{display:block;font-size:9px;color:var(--accent);margin-top:3px}
+.dock-social{width:100%;padding-top:12px;border-top:1px solid var(--line)}.dock-social-heading{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:10px}.dock-social-heading>span{font-size:9px;letter-spacing:.1em;color:var(--muted)}.seat-toggle{display:inline-flex;align-items:center;justify-content:center;gap:4px;border:1px solid var(--line);background:var(--bg);padding:7px 8px;font-size:10px;color:var(--accent)}.reaction-picker{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:5px}.reaction-picker button{background:var(--bg);border:1px solid var(--line);font-size:23px;line-height:1;min-height:38px;padding:6px}.reaction-picker button:hover:not(:disabled){border-color:var(--accent);background:var(--glow)}.seat-reaction{position:absolute;top:-46px;left:50%;margin-left:-24px;z-index:65;width:48px;height:44px;display:grid;place-items:center;border:1px solid var(--accent);border-radius:14px;background:var(--panel);font-size:30px;box-shadow:0 8px 20px #0008,0 0 20px var(--glow);pointer-events:none}
+
+/* On phones and tablets the controls live below the near seat. */
+@media(max-width:900px){
+ .play-column{grid-template-rows:auto auto auto auto;gap:0}
+ .play-column .game-surface{grid-row:2}
+ .play-column .action-bar{grid-row:3;grid-column:1;position:sticky;top:12px;bottom:auto;justify-self:stretch;align-self:start;width:100%;height:auto;max-height:none;overflow:visible;margin:12px 0 0;padding:14px;display:flex;flex-direction:column;gap:10px;border-radius:16px}
+ .play-column .hand-result,.play-column .table-hint{grid-row:4;margin-top:12px}
+ .play-column .action-status{display:flex;align-items:center;justify-content:space-between;gap:12px;padding-bottom:0;border:0}.play-column .action-status>span{font-size:10px;margin:0}.play-column .action-status strong{font-size:13px;text-align:right}
+ .play-column .bet-buttons{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}.play-column .bet-buttons:has(button:last-child:nth-child(2)){grid-template-columns:repeat(2,minmax(0,1fr))}
+ .play-column .action-bar .primary,.play-column .action-bar .secondary,.play-column .action-bar .fold-button{width:100%;min-height:44px;font-size:13px;padding:10px 8px}
+ .play-column .raise-controls{display:grid;grid-template-columns:minmax(0,1fr) 80px;gap:8px;padding-top:10px}.play-column .quick-bets{grid-column:1/-1;display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:6px}.play-column .quick-bets button{font-size:11px;min-height:32px}.play-column .raise-controls input[type=range]{grid-column:1;width:100%;min-width:0}.play-column .raise-controls input[type=number]{grid-column:2;width:100%;min-height:36px;font-size:16px}
+ .dock-social{padding-top:9px}.dock-social-heading{margin-bottom:7px}.reaction-picker{grid-template-columns:repeat(6,minmax(0,1fr))}.reaction-picker button{min-height:38px;font-size:22px}
+ .pov-surface,.in-room .pov-surface,.in-room .pov-surface.players-8,.in-room .pov-surface.players-9,.in-room .pov-surface.players-10{--pov-dock:0px;height:560px}
+ .pov-surface .table-world,.pov-seat-layer,.pov-room-backdrop{right:0}
+ .pov-surface .vote-overlay{position:fixed;inset:68px 0 0;padding:18px}
+ .pov-surface .poker-table{left:-10%;width:120%}
+ .pov-surface .table-center{padding:17% 8% 0}
+ .pov-surface.double-barrel .table-center{padding-top:12%}
+ .pov-surface .community-cards .playing-card,.pov-surface .community-cards .card-slot{width:47px;height:68px}
+ .pov-surface.double-barrel .community-cards .playing-card,.pov-surface.double-barrel .community-cards .card-slot{width:40px;height:58px}
+}
+@media(max-width:560px){
+ .in-room .room-layout{padding-top:16px}.in-room .pov-surface{border-radius:18px}.pov-surface .poker-table{top:18%;border-width:9px}.pov-surface .table-center{padding-top:24%}.pov-surface.double-barrel .table-center{padding-top:14%}
+ .pov-surface .community-cards .playing-card,.pov-surface .community-cards .card-slot{width:36px;height:53px}.pov-surface.double-barrel .community-cards .playing-card,.pov-surface.double-barrel .community-cards .card-slot{width:31px;height:46px}
+ .pov-surface .community-cards .card-corner{font-size:13px}.pov-surface .community-cards .card-suit{font-size:23px}.pov-surface .board-label{font-size:8px}.pov-surface .board-wrap{max-width:100%}
+ .play-column .action-bar{padding:12px;gap:9px}.play-column .action-status>span{font-size:9px}.play-column .action-status strong{font-size:12px}.play-column .action-bar .primary,.play-column .action-bar .secondary,.play-column .action-bar .fold-button{font-size:12px}.play-column .quick-bets button{font-size:10px!important;min-height:30px!important}.player-ledger table{font-size:13px}.player-ledger thead th,.player-ledger caption,.stack-note{font-size:11px}
+}
+@media(max-width:360px){.pov-surface .community-cards .playing-card,.pov-surface .community-cards .card-slot{width:32px;height:48px}.pov-surface.double-barrel .community-cards .playing-card,.pov-surface.double-barrel .community-cards .card-slot{width:25px;height:38px}}

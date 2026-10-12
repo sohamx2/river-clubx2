@@ -10,7 +10,9 @@ A private, play-money Texas Hold’em website for 2–10 friends, ready for Verc
 - Configurable seats, free-form starting stacks and blinds, and optional 30/60/90-second turns or no timer. Hosts can resize a table between hands without removing seated players.
 - Private room links and invite codes, same-browser reconnects, and automatic host transfer after 90 seconds away.
 - Side games pass with n−1 votes from the current session: Bomb Pot, Bounty, 7-2 Game, Ocean, Die on the River, Pocket Trips, Double Barrel, Strip Club, Red River, and Pot or Not. Sit out or rebuy between hands.
-- A table-first desktop layout with a compact action rail and game panels below, plus a touch-friendly mobile layout. All chips are fictional; there are no payments or deposits.
+- Player Stack shows every player’s current stack and cumulative net chips from completed hands and side bets. Rebuys do not reset net results. Rooms from older versions begin tracking with this update because full historical transactions were not stored.
+- Six shared emoji reactions appear temporarily over the reacting player’s seat, with a short cooldown. Reactions do not affect turns, action counters, or chips.
+- A table-first desktop layout with a compact action rail and game panels below, plus a full-width mobile table and horizontal action dock below your seat. All chips are fictional; there are no payments or deposits.
 
 ## Run locally
 
@@ -58,7 +60,7 @@ Vercel’s [Hobby plan](https://vercel.com/docs/plans/hobby) is free for persona
 
 **Pocket Trips:** Each player receives three hole cards and uses the best five-card combination of their hole cards and the board.
 
-**Double Barrel:** Two boards share all betting. Each contribution tier is split between the boards, then paid to the winners on each board.
+**Double Barrel:** Two boards share all betting. Each contribution tier is split between the boards, then paid to the winners on each board. Red River can be combined with this format; each board extends independently, and final betting waits for both boards to finish.
 
 **Strip Club:** Each player starts with five hole cards and discards one after the flop, turn, and river before betting. Discard choices appear in a centered overlay with community cards above them. Up to eight players can use this format with a standard deck.
 
@@ -66,9 +68,9 @@ Vercel’s [Hobby plan](https://vercel.com/docs/plans/hobby) is free for persona
 
 **Pot or Not:** The pot at the start of each betting round is the fixed total wager for that round. Each player pays it or folds; blinds count toward the preflop total, and short stacks can call all in. Raises are disabled, and no extra betting occurs when only one funded player remains.
 
-The default amount for games with a chip payment is one percent of all chips at the table, rounded down with a minimum of one chip. Players can edit it before proposing a vote. Showdowns present the live contenders together, revealing the first card and then the second one second later; extra hole cards follow at the same interval. Reduced-motion preferences bypass the animation.
+The default amount for games with a chip payment is one percent of all chips at the table, rounded down with a minimum of one chip. Players can edit it before proposing a vote. Showdowns present the live contenders together, revealing the first card and then the second two seconds later; extra hole cards follow at the same interval. Reduced-motion preferences bypass the animation.
 
-Choose one board format (Ocean, Die on the River, Double Barrel, or Red River) and one hole-card format (Pocket Trips or Strip Club) per hand. Double Barrel and Strip Club cannot run together. Bomb Pot and Pot or Not can accompany compatible formats. A bounty has a fixed roster; other session games allow new players. The host can cancel active side bets and queued formats between hands.
+Choose one board format (Ocean, Die on the River, Double Barrel, or Red River), or combine Double Barrel with Red River. Choose one hole-card format (Pocket Trips or Strip Club) per hand. Double Barrel and Strip Club cannot run together. Bomb Pot and Pot or Not can accompany compatible formats. A bounty has a fixed roster; sitting out does not remove a player from its liability or payouts. Other session games allow new players. The host can cancel active side bets and queued formats between hands.
 
 ## Reconnection and timeouts
 
@@ -76,7 +78,7 @@ Choose one board format (Ocean, Die on the River, Double Barrel, or Red River) a
 - Reopen the same invite link in the same browser to recover the same seat. Clearing cookies or changing browsers creates a new identity.
 - A timeout checks when possible, otherwise folds. The next room request advances expired actions. At least one active client is needed to keep a game moving.
 - An active player inherits hosting after the host has not checked in for 90 seconds.
-- Players leave, sit out, or rebuy only between hands. Closing a tab keeps the seat; the action timer prevents that seat from freezing play.
+- Players can request sit-out or sit-in during a hand. The change applies after settlement and can be cancelled before then. Leaving and rebuys still happen between hands. Closing a tab keeps the seat; the action timer prevents that seat from freezing play.
 - The host may change the table from 2–10 seats between hands, as long as there are enough seats for everyone currently at the table.
 - Rooms expire after seven days without recorded activity. Expired data is cleaned when new rooms are created or `npm run db:setup` runs.
 
@@ -98,7 +100,7 @@ npm run build
 npm run test:api -- http://127.0.0.1:3001
 ```
 
-The engine suite covers hand rankings, Ocean evaluation and dealing, heads-up rules, short all-ins, cumulative reopening, side pots, split pots, privacy, timeouts, 10 players, votes, bounty and 7-2 settlement, reconnects, and chip conservation through 500 randomized hands. The API smoke test creates 10 separate sessions, exercises concurrent joins and votes, submits a duplicate bet, checks card isolation, completes a hand, starts a bomb pot, and verifies CSRF checks.
+The engine suite covers hand rankings, Ocean evaluation and dealing, heads-up rules, short all-ins, cumulative reopening, side pots, split pots, privacy, timeouts, 10 players, votes, bounty and 7-2 settlement, reconnects, and chip conservation through 500 randomized hands. The API smoke test creates 10 separate sessions, exercises concurrent joins and votes, checks duplicate-action protection and card isolation, plays combined side games, verifies net results across rebuys, broadcasts a reaction, queues sit-out and sit-in changes, and verifies CSRF checks.
 
 Live Vercel/Neon deployment requires your accounts and has not been performed as part of this source delivery. The browser’s optional WebMCP table-reading interface is feature-detected; a supporting browser is not required to play.
 
