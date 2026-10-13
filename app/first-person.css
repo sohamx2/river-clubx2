@@ -40,6 +40,7 @@
 .immersive-play .raise-controls input[type=number] { width:88px; min-height:34px; font-size:16px; }
 .immersive-play .dock-social { display:flex; align-items:center; gap:20px; padding-top:9px; }
 .immersive-play .dock-social-heading { flex:1; margin:0; justify-content:flex-start; gap:14px; }
+.overhead-toggle[aria-pressed="true"] { border-color:var(--accent); background:var(--glow); color:var(--text); }
 .immersive-play .reaction-picker { display:grid; grid-template-columns:repeat(6,minmax(0,1fr)); gap:6px; width:300px; }
 .immersive-play .reaction-picker button { min-height:33px; font-size:22px; padding:4px 7px; }
 .immersive-play .hand-result,.immersive-play .table-hint { grid-row:3; }
@@ -77,7 +78,8 @@
  .immersive-play .quick-bets button { padding:5px 6px; }
  .immersive-play .raise-controls input[type=number] { width:70px; }
  .immersive-play .dock-social { display:block; padding-top:8px; }
- .immersive-play .dock-social-heading { justify-content:space-between; margin-bottom:6px; }
+ .immersive-play .dock-social-heading { justify-content:space-between; margin-bottom:6px; gap:5px; }
+ .immersive-play .dock-social-heading .seat-toggle { padding:6px 7px; font-size:9px; }
  .immersive-play .reaction-picker { width:100%; gap:5px; }
  .immersive-play .reaction-picker button { min-height:30px; font-size:20px; }
 }

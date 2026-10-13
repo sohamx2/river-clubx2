@@ -13,6 +13,7 @@ interface SceneProps {
   poses: Record<string, HeadPose>;
   streams: Record<string, MediaStream>;
   localStream: MediaStream | null;
+  topDown: boolean;
   onReady?: (ready: boolean) => void;
 }
 
@@ -66,6 +67,12 @@ export function ThreePokerScene(props: SceneProps) {
     scene.fog = new THREE.Fog(palette.wall, 10, 27);
     const camera = new THREE.PerspectiveCamera(61, 1, 0.06, 36);
     const viewTarget = new THREE.Vector3();
+    const seatedTarget = new THREE.Vector3();
+    const overheadTarget = new THREE.Vector3(0, 1.35, 0);
+    const seatedPosition = new THREE.Vector3();
+    const overheadPosition = new THREE.Vector3();
+    const worldUp = new THREE.Vector3(0, 1, 0);
+    const overheadUp = new THREE.Vector3(0, 0, -1);
     scene.add(camera);
     renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.25));
     renderer.outputColorSpace = THREE.SRGBColorSpace;
@@ -98,6 +105,7 @@ export function ThreePokerScene(props: SceneProps) {
     let lastRendered = 0;
     let currentYaw = 0;
     let currentPitch = 0;
+    let topDownBlend = 0;
     const born = performance.now();
     const dealAnimations: { object: THREE.Object3D; target: THREE.Vector3; start: number; held: boolean }[] = [];
     const geometry = <T extends THREE.BufferGeometry>(value: T): T => { geometries.add(value); return value; };
@@ -585,10 +593,17 @@ export function ThreePokerScene(props: SceneProps) {
       renderer.shadowMap.enabled=!narrow&&!videoActive;
       const { room, now, pose } = live.current;
       currentYaw += (pose.yaw - currentYaw) * .12; currentPitch += (pose.pitch - currentPitch) * .12;
-      const yaw = currentYaw * (narrow ? .44 : .52);
-      const baselinePitch = Math.atan2((narrow ? .45 : 1.47) - camera.position.y, camera.position.z + .8);
-      const lookPitch = baselinePitch - currentPitch * .18;
-      viewTarget.set(Math.sin(yaw) * 10, camera.position.y + Math.tan(lookPitch) * 10, camera.position.z - 10 * Math.cos(yaw));
+      topDownBlend += ((live.current.topDown ? 1 : 0) - topDownBlend) * .1;
+      const seatedY = narrow ? 2.48 : 2.27, seatedZ = narrow ? 5.5 : 4.55;
+      seatedPosition.set(0, seatedY, seatedZ);
+      overheadPosition.set(0, narrow ? 10.4 : 8.8, 0);
+      camera.position.lerpVectors(seatedPosition, overheadPosition, topDownBlend);
+      camera.up.copy(worldUp).lerp(overheadUp, topDownBlend).normalize();
+      const yaw = currentYaw * (narrow ? .44 : .52) * (1 - topDownBlend);
+      const baselinePitch = Math.atan2((narrow ? .45 : 1.47) - seatedY, seatedZ + .8);
+      const lookPitch = baselinePitch - currentPitch * .18 * (1 - topDownBlend);
+      seatedTarget.set(Math.sin(yaw) * 10, seatedY + Math.tan(lookPitch) * 10, seatedZ - 10 * Math.cos(yaw));
+      viewTarget.lerpVectors(seatedTarget, overheadTarget, topDownBlend);
       camera.lookAt(viewTarget);
       updateLayout(room); updateCards(room, time); updateActors(room, now, time);
       if (!reducedMotion) hands.rotation.z = Math.sin((time - born) / 2100) * .003;
