@@ -8,6 +8,10 @@ export const schema = [
  `CREATE INDEX IF NOT EXISTS river_rooms_updated ON river_rooms(updated_at)`,
  `CREATE TABLE IF NOT EXISTS river_limits (key TEXT PRIMARY KEY, count INTEGER NOT NULL, expires_at TIMESTAMPTZ NOT NULL)`,
  `CREATE INDEX IF NOT EXISTS river_limits_expiry ON river_limits(expires_at)`,
+ `CREATE TABLE IF NOT EXISTS river_presence (code TEXT NOT NULL, player_id TEXT NOT NULL, state JSONB NOT NULL, updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), PRIMARY KEY (code,player_id))`,
+ `CREATE TABLE IF NOT EXISTS river_signals (id TEXT PRIMARY KEY, code TEXT NOT NULL, sender TEXT NOT NULL, recipient TEXT NOT NULL, data JSONB NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`,
+ `CREATE INDEX IF NOT EXISTS river_signals_recipient ON river_signals(code,recipient,created_at)`,
+ `CREATE INDEX IF NOT EXISTS river_presence_updated ON river_presence(updated_at)`,
 ];
 type Globals=typeof globalThis & {riverLocks?:Map<string,Promise<unknown>>;riverRates?:Map<string,{count:number;expires:number}>;riverSchema?:Promise<void>};
 const g=globalThis as Globals;
@@ -15,6 +19,8 @@ export const localMode=()=>!process.env.DATABASE_URL;
 function database(){if(process.env.DATABASE_URL)return neon(process.env.DATABASE_URL);if(process.env.VERCEL||process.env.NODE_ENV==='production'&&process.env.ALLOW_LOCAL_STORE!=='true')throw new GameError('The table server needs its database connection. Set DATABASE_URL in Vercel and redeploy.',503);return null;}
 export async function ensureSchema(){const sql=database();if(!sql)return;g.riverSchema??=(async()=>{for(const statement of schema)await sql.query(statement);})();try{await g.riverSchema;}catch(e){g.riverSchema=undefined;throw e;}}
 const folder=()=>path.join(process.cwd(),'.local-data');
+// Presence has separate rows/files and never competes with poker transitions.
+export { database, lock };
 function valid(code:string){if(!/^[A-Z2-9]{6}$/.test(code))throw new GameError('Enter a valid six-character room code.');}
 async function lock<T>(key:string,fn:()=>Promise<T>):Promise<T>{g.riverLocks??=new Map();const previous=g.riverLocks.get(key)||Promise.resolve();const current=previous.catch(()=>{}).then(fn);g.riverLocks.set(key,current);try{return await current;}finally{if(g.riverLocks.get(key)===current)g.riverLocks.delete(key);}}
 async function localRead(code:string){try{const record=JSON.parse(await readFile(path.join(folder(),code+'.json'),'utf8')) as {room:Room;updated:number};if(Date.now()-record.updated>7*86400000)return null;return record.room;}catch(e){if((e as NodeJS.ErrnoException).code==='ENOENT')return null;throw e;}}
@@ -44,4 +50,4 @@ export async function rateLimit(key:string,limit:number,windowMs:number){
  if(sql){const rows=await sql`INSERT INTO river_limits (key,count,expires_at) VALUES (${bucket},1,${new Date(Date.now()+windowMs).toISOString()}::timestamptz) ON CONFLICT (key) DO UPDATE SET count=river_limits.count+1 RETURNING count`;if(Number(rows[0].count)>limit)throw new GameError('Too many requests. Please wait a moment.',429);}
  else{g.riverRates??=new Map();for(const[k,v]of g.riverRates)if(v.expires<Date.now())g.riverRates.delete(k);const entry=g.riverRates.get(bucket)||{count:0,expires:Date.now()+windowMs};entry.count++;g.riverRates.set(bucket,entry);if(entry.count>limit)throw new GameError('Too many requests. Please wait a moment.',429);}
 }
-export async function cleanup(){await ensureSchema();const sql=database();if(sql){await sql`DELETE FROM river_rooms WHERE updated_at < NOW() - INTERVAL '7 days'`;await sql`DELETE FROM river_limits WHERE expires_at < NOW()`;}}
+export async function cleanup(){await ensureSchema();const sql=database();if(sql){await sql`DELETE FROM river_rooms WHERE updated_at < NOW() - INTERVAL '7 days'`;await sql`DELETE FROM river_limits WHERE expires_at < NOW()`;await sql`DELETE FROM river_presence WHERE updated_at < NOW() - INTERVAL '1 minute'`;await sql`DELETE FROM river_signals WHERE created_at < NOW() - INTERVAL '2 minutes'`;}}

@@ -12,7 +12,9 @@ A private, play-money Texas Hold’em website for 2–10 friends, ready for Verc
 - Side games pass with n−1 votes from the current session: Bomb Pot, Bounty, 7-2 Game, Ocean, Die on the River, Pocket Trips, Double Barrel, Strip Club, Red River, and Pot or Not. Sit out or rebuy between hands.
 - Player Stack shows every player’s current stack and cumulative net chips from completed hands and side bets. Rebuys do not reset net results. Rooms from older versions begin tracking with this update because full historical transactions were not stored.
 - Six shared emoji reactions appear temporarily over the reacting player’s seat, with a short cooldown. Reactions do not affect turns, action counters, or chips.
-- A table-first desktop layout with a compact action rail and game panels below, plus a full-width mobile table and horizontal action dock below your seat. All chips are fictional; there are no payments or deposits.
+- A full Three.js first-person bar environment with original 3D human stick figures, expressive faces for turns/actions/reactions, 3D hands and a hole-card fan at your seat, and mouse/trackpad-controlled head movement shared with other players. A per-browser view toggle preserves the previous table layout.
+- Optional live camera faces with an explicit enable button and browser permission prompt. Only video is requested; sharing stops when turned off, leaving, or switching out of first-person mode.
+- A full-width 3D table with native betting controls over the near rail and game panels below. Table view preserves the compact desktop rail and mobile dock. All chips are fictional; there are no payments or deposits.
 
 ## Run locally
 
@@ -45,6 +47,22 @@ You can also deploy from this folder with the [Vercel CLI](https://vercel.com/do
 This is designed for occasional private games within free-plan quotas. It uses short HTTPS polling requests (about every 1.2 seconds while visible, every 12 seconds in the background) and does not require a separate always-running server or paid realtime service. With 10 continuously active players, polling alone is roughly 30,000 requests per hour, plus game actions and page loads.
 
 Vercel’s [Hobby plan](https://vercel.com/docs/plans/hobby) is free for personal, non-commercial use and currently includes 1 million function invocations per month, alongside CPU, memory, and transfer limits. Neon also offers a [Free plan](https://neon.com/pricing) with usage limits. Check both dashboards before long or frequent sessions; free is not unlimited. No paid plan is required by this code. Pricing and quotas can change.
+
+## First-person controls and camera faces
+
+First-person mode is the default. Three.js renders the entire bar, table, chairs, human characters, hands, and cards as 3D objects. Move your mouse or trackpad pointer across the scene to look around; **Center view** returns your head to the middle. Other players see your head turn. The avatar looks puzzled on its turn, changes expression after poker actions, and matches its active emoji reaction. Faces use public actions and never suggest information about hidden cards. On phones, the physical table and seat arc adjust to a full-width portrait view, with controls near your hands. Drag horizontally to look; vertical touch gestures still scroll.
+
+Choose **Use camera face** to request browser camera permission and replace your stick character's face with live video. The feed is shared with the current table, with no microphone capture or video recording by the app. **Turn camera off** stops the camera tracks immediately. Declining permission leaves the stick face available. Camera access requires HTTPS (Vercel supplies it) or localhost during development.
+
+Head motion uses WebRTC data channels with a throttled server fallback. Camera frames travel peer to peer; the server stores only poses, short-lived session information, and recipient-private connection signals in separate tables. These requests never advance a turn or update poker state. Presence adds low-frequency polling and occasional writes to the existing free-plan usage, while connected peers exchange movement directly.
+
+Public STUN servers are configured by default. Some mobile, corporate, or restrictive NAT networks require a TURN relay for live video. In that case, set **NEXT_PUBLIC_RTC_ICE_SERVERS** in Vercel to a JSON array of WebRTC ICE servers and redeploy, for example:
+
+```json
+[{"urls":"stun:stun.l.google.com:19302"},{"urls":"turn:your-relay.example:3478","username":"relay-user","credential":"relay-credential"}]
+```
+
+This optional configuration is visible to browsers by design; use credentials intended for browser clients, never your provider's management API secret. Without a relay, a blocked direct connection falls back to shared head poses and stick faces, and poker remains playable.
 
 ## How special games work
 
@@ -84,7 +102,7 @@ Choose one board format (Ocean, Die on the River, Double Barrel, or Red River), 
 
 ## Architecture
 
-`app/api/table/route.ts` authenticates, validates, and applies every action. `lib/engine.ts` is the authoritative state machine. `lib/evaluator.ts` ranks the best five cards directly from 5–52 distinct cards, including long Red River boards. `lib/store.ts` persists the state in Neon JSONB and uses revision-based compare-and-swap, retrying conflicts across serverless instances. Requests carry idempotency IDs and poker-action counters to reject stale moves and avoid duplicate bets.
+`app/api/presence/route.ts` authenticates seated players and isolates poses/camera signalling from game state; WebRTC carries head motion and live video between peers. `app/api/table/route.ts` authenticates, validates, and applies every action. `lib/engine.ts` is the authoritative state machine. `lib/evaluator.ts` ranks the best five cards directly from 5–52 distinct cards, including long Red River boards. `lib/store.ts` persists the state in Neon JSONB and uses revision-based compare-and-swap, retrying conflicts across serverless instances. Requests carry idempotency IDs and poker-action counters to reject stale moves and avoid duplicate bets.
 
 Clients receive only their own hole cards before showdown. The remaining deck, authentication hashes, and action receipts never enter public responses. Folded hands stay hidden at showdown. Room reads cannot be cached. CSRF checks protect mutations, and create/join endpoints are rate-limited. A person with the room link can join while a seat is available; these are private-by-invite rooms, not password-protected rooms. The server/database owner is trusted, as with most home-game apps.
 
@@ -98,7 +116,12 @@ npm run typecheck
 npm run build
 # With the local server running (use its printed port):
 npm run test:api -- http://127.0.0.1:3001
+node --import tsx tests/presence-smoke.ts http://127.0.0.1:3001
 ```
+
+Character tests cover public-action and emoji expression priorities, while the presence regression protects camera sessions during reloads. The presence smoke test verifies shared poses, camera state, recipient-private/idempotent signals, validation, authentication, CSRF, and unchanged poker state.
+
+Desktop and portrait browser checks cover the 3D scene, card fans, controls, and camera permission denial. Synthetic peer video reached the remote 3D face, but the test browser crashed on the capture side; real-camera interoperability and restrictive-network relay behavior still require device testing.
 
 The engine suite covers hand rankings, Ocean evaluation and dealing, heads-up rules, short all-ins, cumulative reopening, side pots, split pots, privacy, timeouts, 10 players, votes, bounty and 7-2 settlement, reconnects, and chip conservation through 500 randomized hands. The API smoke test creates 10 separate sessions, exercises concurrent joins and votes, checks duplicate-action protection and card isolation, plays combined side games, verifies net results across rebuys, broadcasts a reaction, queues sit-out and sit-in changes, and verifies CSRF checks.
 
@@ -107,11 +130,15 @@ Live Vercel/Neon deployment requires your accounts and has not been performed as
 ## Files
 
 - `components/PokerApp.tsx`: lobby, room, betting, voting, and sharing UI.
+- `components/ThreePokerScene.tsx`: physical 3D environment, seated characters, card meshes, and camera-face textures.
+- `components/TableScene.tsx`, `components/useTablePeers.ts`, `components/useTablePresence.ts`: view controls, permission-based camera capture, and shared head/video connections.
 - `components/Cards.tsx`: animated cards and deck selector.
 - `app/globals.css`: five themes and responsive layouts.
+- `app/first-person.css`: full-width scene and native betting overlay.
 - `lib/engine.ts`, `lib/evaluator.ts`: poker and side-game rules.
 - `lib/store.ts`: persistent rooms and atomic updates.
 - `app/api/table/route.ts`: protected room API.
+- `app/api/presence/route.ts`, `lib/presence-store.ts`: authenticated, separate head-pose and signalling storage.
 - `tests/`: engine tests and multiplayer smoke test.
 - `database.sql`: optional initial database setup.
 

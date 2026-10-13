@@ -1,0 +1,101 @@
+/* Three.js owns the room, characters, hands, table and cards. The HUD remains
+   native HTML so betting, votes and dialogs stay accessible and easy to tap. */
+.view-switch { display:flex; gap:3px; padding:3px; border:1px solid var(--line); border-radius:9px; background:var(--bg); letter-spacing:0; }
+.view-switch button { border:0; background:transparent; color:var(--muted); padding:7px 12px; font-size:11px; border-radius:6px; }
+.view-switch button[aria-pressed=true] { background:var(--accent); color:var(--accent-ink); }
+.table-topline { gap:12px; align-items:center; }
+.table-visuals { position:absolute; inset:0; touch-action:pan-y; }
+.first-person-scene { --pov-dock:0px; height:800px; background:#16100d; overflow:hidden; }
+.three-poker-canvas { position:absolute; inset:0; overflow:hidden; }
+.three-poker-canvas canvas { display:block; width:100%; height:100%; outline:none; touch-action:pan-y; }
+.scene-loading { position:absolute; inset:0; display:grid; place-items:center; color:var(--accent); background:radial-gradient(ellipse at 50% 40%,var(--felt),#100c09); font-size:14px; }
+.first-person-tools { position:absolute; top:18px; left:18px; right:18px; z-index:55; pointer-events:none; }
+.pov-control-row { display:flex; align-items:center; gap:7px; }
+.camera-toggle,.center-view { display:inline-flex; align-items:center; gap:7px; pointer-events:auto; border:1px solid #f0e1c533; background:#121916ed; color:#e7e1d5; min-height:35px; padding:7px 11px; font-size:11px; border-radius:9px; box-shadow:0 3px 12px #0003; }
+.center-view { padding:8px; }
+.camera-toggle:hover,.center-view:hover { border-color:var(--accent); }
+.camera-live { border-color:var(--accent); color:var(--accent); }
+.look-hint { display:inline-flex; align-items:center; gap:5px; color:#e0d6c4; font-size:11px; margin-left:auto; text-shadow:0 1px 3px #000; }
+.camera-sharing-note,.camera-error { margin:6px 0 0; font-size:11px; line-height:1.5; max-width:430px; color:#e6d9bd; text-shadow:0 1px 4px #000; }
+.camera-error { color:#f7bfa1; background:#21160de6; padding:8px 10px; border-radius:8px; }
+.local-face-preview { width:38px; height:38px; border-radius:50%; overflow:hidden; border:1px solid var(--accent); margin-left:4px; }
+.camera-face-video { display:block; width:100%; height:100%; object-fit:cover; }
+.local-camera { transform:scaleX(-1); }
+.first-person-welcome { position:absolute; top:46%; left:50%; transform:translateX(-50%); z-index:15; }
+.first-person-welcome button { display:flex; align-items:center; gap:8px; border:1px solid #ffffff30; background:#101a14da; color:var(--accent); padding:10px 16px; font-size:13px; backdrop-filter:blur(8px); }
+.first-person-scene .vote-overlay { inset:0; z-index:150; }
+
+/* The full-width scene shares its grid row with a compact HUD at the near rail. */
+.immersive-play .action-bar { grid-row:2; grid-column:1; align-self:end; justify-self:center; position:relative; top:auto; bottom:auto; width:min(900px,calc(100% - 36px)); margin:0 0 18px; padding:14px 18px; display:flex; flex-direction:row; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:10px; border-radius:17px; height:auto; max-height:none; overflow:visible; background:color-mix(in srgb,var(--panel) 94%,transparent); border-color:color-mix(in srgb,var(--accent) 30%,var(--line)); box-shadow:0 10px 30px #0007; backdrop-filter:blur(12px); z-index:60; }
+.immersive-play .action-status { width:auto; min-width:160px; flex:1; padding:0; border:0; }
+.immersive-play .action-status>span { font-size:10px; margin-bottom:5px; }
+.immersive-play .action-status strong { font-size:14px; }
+.immersive-play .bet-buttons { width:auto; flex:1.7; display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:8px; }
+.immersive-play .bet-buttons:has(button:last-child:nth-child(2)) { grid-template-columns:repeat(2,minmax(0,1fr)); }
+.immersive-play .action-bar .primary,.immersive-play .action-bar .secondary,.immersive-play .action-bar .fold-button { min-height:44px; padding:11px 16px; font-size:13px; }
+.immersive-play .raise-controls { flex-basis:100%; display:grid; grid-template-columns:auto minmax(0,1fr) 88px; gap:12px; padding-top:10px; }
+.immersive-play .quick-bets { display:flex; gap:6px; }
+.immersive-play .quick-bets button { min-height:31px; padding:6px 10px; font-size:11px; }
+.immersive-play .raise-controls input[type=range] { width:100%; }
+.immersive-play .raise-controls input[type=number] { width:88px; min-height:34px; font-size:16px; }
+.immersive-play .dock-social { display:flex; align-items:center; gap:20px; padding-top:9px; }
+.immersive-play .dock-social-heading { flex:1; margin:0; justify-content:flex-start; gap:14px; }
+.immersive-play .reaction-picker { display:grid; grid-template-columns:repeat(6,minmax(0,1fr)); gap:6px; width:300px; }
+.immersive-play .reaction-picker button { min-height:33px; font-size:22px; padding:4px 7px; }
+.immersive-play .hand-result,.immersive-play .table-hint { grid-row:3; }
+
+@media(max-width:900px) {
+ .first-person-scene,.in-room .first-person-scene,.in-room .first-person-scene.players-8,.in-room .first-person-scene.players-9,.in-room .first-person-scene.players-10 { --pov-dock:0px; height:760px; }
+ .immersive-play .action-bar { grid-row:2; width:calc(100% - 24px); margin:0 0 12px; padding:12px; flex-direction:row; position:relative; align-self:end; }
+ .immersive-play .action-status { display:block; }
+ .immersive-play .action-status strong { text-align:left; }
+ .immersive-play .raise-controls { grid-template-columns:auto minmax(0,1fr) 78px; }
+ .immersive-play .quick-bets { grid-column:auto; display:flex; }
+ .immersive-play .raise-controls input[type=range],.immersive-play .raise-controls input[type=number] { grid-column:auto; }
+ .immersive-play .hand-result,.immersive-play .table-hint { grid-row:3; }
+}
+@media(max-width:560px) {
+ .view-switch button { font-size:10px; padding:6px 8px; }
+ .table-topline { flex-wrap:wrap; padding:10px 0; gap:8px; }
+ .table-topline>span:first-child { font-size:9px; letter-spacing:.08em; }
+ .table-topline .phase-label { font-size:9px; letter-spacing:.06em; }
+ .table-topline .view-switch { order:3; width:100%; justify-content:center; }
+ .table-topline .view-switch button { flex:1; }
+ .first-person-scene,.in-room .first-person-scene,.in-room .first-person-scene.players-8,.in-room .first-person-scene.players-9,.in-room .first-person-scene.players-10 { height:720px; border-radius:14px; }
+ .first-person-tools { top:10px; left:10px; right:10px; }
+ .look-hint { display:none; }
+ .camera-toggle { font-size:10px; min-height:33px; padding:7px 9px; }
+ .camera-sharing-note { font-size:10px; max-width:300px; }
+ .immersive-play .action-bar { width:calc(100% - 16px); margin-bottom:8px; gap:8px; padding:10px; border-radius:13px; }
+ .immersive-play .action-status { display:flex; align-items:center; justify-content:space-between; flex-basis:100%; min-width:0; }
+ .immersive-play .action-status>span { font-size:9px; margin:0; }
+ .immersive-play .action-status strong { font-size:12px; text-align:right; }
+ .immersive-play .bet-buttons { flex-basis:100%; gap:6px; }
+ .immersive-play .action-bar .primary,.immersive-play .action-bar .secondary,.immersive-play .action-bar .fold-button { min-height:42px; font-size:12px; padding:10px 7px; }
+ .immersive-play .raise-controls { grid-template-columns:minmax(0,1fr) 70px; gap:7px; padding-top:8px; }
+ .immersive-play .quick-bets { grid-column:1/-1; display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); }
+ .immersive-play .quick-bets button { padding:5px 6px; }
+ .immersive-play .raise-controls input[type=number] { width:70px; }
+ .immersive-play .dock-social { display:block; padding-top:8px; }
+ .immersive-play .dock-social-heading { justify-content:space-between; margin-bottom:6px; }
+ .immersive-play .reaction-picker { width:100%; gap:5px; }
+ .immersive-play .reaction-picker button { min-height:30px; font-size:20px; }
+}
+
+/* Native top-layer voting stays above the canvas and betting HUD, even when
+   players are scrolled down to their controls or stack panels. */
+.table-vote-dialog { width:min(550px,calc(100vw - 28px)); max-width:none; max-height:calc(100dvh - 28px); overflow:auto; margin:auto; padding:0; border:0; background:transparent; color:inherit; }
+.table-vote-dialog::backdrop { background:#030604a8; backdrop-filter:blur(6px); }
+.table-vote-dialog .vote-overlay,.first-person-scene .table-vote-dialog .vote-overlay { position:static; inset:auto; width:100%; height:auto; padding:0; background:none; backdrop-filter:none; transform:none; }
+.table-vote-dialog .vote-card { max-width:none; width:100%; margin:0; }
+
+/* Let the physical table reach both screen edges; the room's supporting UI
+   retains its gutters. */
+.room-layout:has(.immersive-play) { max-width:none; padding-inline:0; }
+.room-layout:has(.immersive-play) .room-top { margin-inline:24px; }
+.room-layout:has(.immersive-play) .table-topline { margin-inline:24px; }
+.room-layout:has(.immersive-play) .room-sidebar { margin-inline:24px; }
+.immersive-play .first-person-scene { border-radius:0; border-inline:0; }
+@media(max-width:560px) {
+ .room-layout:has(.immersive-play) .room-top,.room-layout:has(.immersive-play) .table-topline,.room-layout:has(.immersive-play) .room-sidebar { margin-inline:14px; }
+}
