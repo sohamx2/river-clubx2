@@ -536,7 +536,10 @@ export function ThreePokerScene(props: SceneProps) {
         const remotePose = live.current.poses[player.id] || { yaw: 0, pitch: 0 };
         const breathing = reducedMotion ? 0 : Math.sin((time - born) / 900 + actor.idlePhase) * .009;
         actor.head.position.y = 1.84 + breathing;
-        actor.head.rotation.y += (remotePose.yaw * .62 - actor.head.rotation.y) * .16;
+        // The received yaw is relative to the sender's seated POV. Avatars face
+        // across the table toward the camera, so that POV's right is the
+        // avatar's local left. Invert it when translating into avatar space.
+        actor.head.rotation.y += (-remotePose.yaw * .62 - actor.head.rotation.y) * .16;
         actor.head.rotation.x += (remotePose.pitch * .3 - actor.head.rotation.x) * .16;
         const tilt = expression === 'thinking' ? -.12 : expression === 'fold' ? .11 : 0;
         actor.head.rotation.z += (tilt - actor.head.rotation.z) * .09;
