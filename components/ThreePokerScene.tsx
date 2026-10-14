@@ -5,6 +5,7 @@ import * as THREE from 'three';
 import { characterExpression, EXPRESSION_LABELS, type CharacterExpression } from '@/lib/table-characters';
 import type { HeadPose } from '@/lib/presence-types';
 import type { PublicPlayer, RoomView, Theme } from '@/lib/types';
+import { chipBreakdown, CHIP_VALUES, DIE_ROLL_MS, OCEAN_WAVE_MS } from '@/lib/table-scene';
 
 interface SceneProps {
   room: RoomView;
@@ -42,6 +43,11 @@ interface Actor {
   videoTexture?: THREE.VideoTexture;
   idlePhase: number;
 }
+interface TableMotion {
+  object:THREE.Object3D; from:THREE.Vector3; target:THREE.Vector3;
+  rotation:THREE.Quaternion; start:number; duration:number; arc:number; spin:number; remove:boolean;
+}
+const FELT_Y = 1.185;
 
 /** A real, original 3D room. Game rules and camera permission stay outside this renderer. */
 export function ThreePokerScene(props: SceneProps) {
@@ -72,7 +78,6 @@ export function ThreePokerScene(props: SceneProps) {
     const seatedPosition = new THREE.Vector3();
     const overheadPosition = new THREE.Vector3();
     const worldUp = new THREE.Vector3(0, 1, 0);
-    const overheadUp = new THREE.Vector3(0, 0, -1);
     scene.add(camera);
     renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.25));
     renderer.outputColorSpace = THREE.SRGBColorSpace;
@@ -93,26 +98,38 @@ export function ThreePokerScene(props: SceneProps) {
     const heldCards = new THREE.Group();
     const hands = new THREE.Group();
     const world = new THREE.Group();
-    scene.add(world, boards, emptySeats);
-    camera.add(hands, heldCards);
+    const chipsOnTable = new THREE.Group(), flyingChips = new THREE.Group(), muck = new THREE.Group();
+    scene.add(world, boards, emptySeats, heldCards, hands, chipsOnTable, flyingChips, muck);
     let disposed = false;
     let animationFrame = 0;
     let narrow = false;
     let layoutSignature = '';
     let boardSignature = '';
     let handSignature = '';
-    let potLabel = '';
     let lastRendered = 0;
     let currentYaw = 0;
     let currentPitch = 0;
     let topDownBlend = 0;
+    let previousFrame = 0;
+    let eventHand = -1;
+    let eventsInitialized = false;
+    let dealerCue: {handNo:number;start:number;players:string[];rounds:number;dealerId:string}|null = null;
+    let oceanStarted = -Infinity;
+    let dieStarted = -Infinity;
+    let dieValue = 0;
+    let posterSignature = '';
+    let lastShownBoard:string[]=[];
+    let boardBeforeDie:string[]|null=null;
+    const seenEvents = new Set<string>();
+    const gestures = new Map<string,{kind:'check'|'fold'|'bet';start:number}>();
+    const stackGroups = new Map<string,THREE.Group>();
     const born = performance.now();
-    const dealAnimations: { object: THREE.Object3D; target: THREE.Vector3; start: number; held: boolean }[] = [];
+    const motions:TableMotion[] = [];
     const geometry = <T extends THREE.BufferGeometry>(value: T): T => { geometries.add(value); return value; };
     const material = <T extends THREE.Material>(value: T): T => { materials.add(value); return value; };
     const texture = <T extends THREE.Texture>(value: T): T => { textures.add(value); value.colorSpace = THREE.SRGBColorSpace; return value; };
     const standard = (color: string, extra: THREE.MeshStandardMaterialParameters = {}) => material(new THREE.MeshStandardMaterial({ color, roughness: .78, ...extra }));
-    const mesh = <G extends THREE.BufferGeometry, M extends THREE.Material>(shape: G, paint: M, parent: THREE.Object3D, position?: [number, number, number]) => {
+    const mesh = <G extends THREE.BufferGeometry, M extends THREE.Material | THREE.Material[]>(shape: G, paint: M, parent: THREE.Object3D, position?: [number, number, number]) => {
       const object = new THREE.Mesh(shape, paint);
       if (position) object.position.set(...position);
       object.castShadow = true; object.receiveShadow = true; parent.add(object); return object;
@@ -132,7 +149,6 @@ export function ThreePokerScene(props: SceneProps) {
     const rail = standard(palette.rail, { roughness: .52 });
     const accent = standard(palette.accent, { metalness: .35, roughness: .42 });
     const cardMaterials = new Map<string, THREE.MeshBasicMaterial>();
-    const heldCardMaterials = new Map<string, THREE.MeshBasicMaterial>();
     const faceTextures = new Map<CharacterExpression, THREE.CanvasTexture>();
 
     function segment(parent: THREE.Object3D, from: THREE.Vector3, to: THREE.Vector3, radius: number, paint: THREE.Material) {
@@ -334,47 +350,69 @@ export function ThreePokerScene(props: SceneProps) {
       });
       const paint = material(new THREE.MeshBasicMaterial({ map, side: THREE.DoubleSide, toneMapped: false })); cardMaterials.set(key, paint); return paint;
     }
-    function makeCard(card: string, parent: THREE.Group, target: THREE.Vector3, rotation: THREE.Euler, delay = 0, held = false) {
-      const group = new THREE.Group(); group.position.copy(target); group.rotation.copy(rotation); parent.add(group);
-      const body = mesh(cardThickness, ivory, group); body.castShadow = !held;
-      let paint = cardMaterial(card);
-      if (held) {
-        const cached = heldCardMaterials.get(card);
-        if (cached) paint = cached;
-        else {
-          paint = material(paint.clone()); paint.depthTest = false; paint.depthWrite = false;
-          heldCardMaterials.set(card, paint);
-        }
-      }
-      const front = mesh(cardPlane, paint, group, [0, 0, .0055]); front.castShadow = false;
-      if (held) front.renderOrder = 100 + delay;
-      if (!reducedMotion) {
-        group.position.add(held ? new THREE.Vector3(-.35, -.52, -.3) : new THREE.Vector3(0, .32, -.8));
-        dealAnimations.push({ object: group, target: target.clone(), start: performance.now() + delay, held });
-      }
+    function moveObject(object:THREE.Object3D, from:THREE.Vector3, target:THREE.Vector3, start:number, duration=650, arc=.22, spin=0, remove=false) {
+      if(reducedMotion){object.position.copy(target);if(remove)object.removeFromParent();return;}
+      object.position.copy(from);
+      motions.push({object,from:from.clone(),target:target.clone(),rotation:object.quaternion.clone(),start,duration,arc,spin,remove});
+    }
+    function makeCard(card:string,parent:THREE.Group,target:THREE.Vector3,rotation:THREE.Euler,delay=0,origin?:THREE.Vector3) {
+      const group=new THREE.Group();group.position.copy(target);group.rotation.copy(rotation);parent.add(group);
+      mesh(cardThickness,ivory,group);
+      const front=mesh(cardPlane,cardMaterial(card),group,[0,0,.0055]);front.castShadow=false;
+      if(origin){parent.updateWorldMatrix(true,false);moveObject(group,parent.worldToLocal(origin.clone()),target,performance.now()+delay,660,.28,.22);}
       return group;
     }
-    function clear(parent: THREE.Group) { for (const child of [...parent.children]) parent.remove(child); }
+    function clear(parent:THREE.Group) {
+      const removed=new Set<THREE.Object3D>();parent.traverse(object=>removed.add(object));
+      for(let i=motions.length-1;i>=0;i--)if(removed.has(motions[i].object))motions.splice(i,1);
+      for(const child of [...parent.children]){child.traverse(object=>{if(object instanceof THREE.InstancedMesh)object.dispose();});parent.remove(child);}
+    }
+    function placement(room:RoomView,id:string) {
+      const player=room.players.find(p=>p.id===id),mySeat=room.players.find(p=>p.id===room.me)?.seat||0;
+      if(!player||id===room.me)return {x:0,z:2.8,facing:Math.PI};
+      const count=room.settings.maxPlayers,offset=(player.seat-mySeat+count)%count,span=Math.min(1,(count-1)/5);
+      const progress=count===2?.5:(1-span)/2+(offset-1)/(count-2)*span,angle=progress*Math.PI;
+      const x=-(narrow?2.38:3.86)*Math.cos(angle),z=(narrow?-1.1:-.6)-(narrow?1.8:2.2)*Math.sin(angle);
+      return {x,z,facing:Math.atan2(-x,-z)};
+    }
+    function playerPoint(room:RoomView,id:string,x=0,forward=1.05,height=FELT_Y) {
+      const seat=placement(room,id);
+      return new THREE.Vector3(seat.x+x*Math.cos(seat.facing)+forward*Math.sin(seat.facing),height,seat.z-x*Math.sin(seat.facing)+forward*Math.cos(seat.facing));
+    }
+    function dealerOrigin(room:RoomView) {
+      const dealer=room.players.find(p=>p.seat===room.dealerSeat);
+      return playerPoint(room,dealer?.id||room.me,0,.63,1.48);
+    }
+    function cardDealDelay(room:RoomView,id:string,index:number) {
+      if(dealerCue?.handNo!==room.handNo)return undefined;
+      if(performance.now()-dealerCue.start>dealerCue.players.length*dealerCue.rounds*105+600)return undefined;
+      const order=dealerCue.players.indexOf(id);if(order<0)return undefined;
+      return Math.max(0,dealerCue.start-performance.now())+(index*dealerCue.players.length+order)*105;
+    }
+    function makeArms(parent:THREE.Group,shirt:THREE.Material) {
+      const leftArm=new THREE.Group(),rightArm=new THREE.Group();parent.add(leftArm,rightArm);
+      for(const [side,arm] of [[-1,leftArm],[1,rightArm]] as const){
+        arm.position.set(side*.27,1.58,0);
+        segment(arm,new THREE.Vector3(),new THREE.Vector3(side*.12,-.36,.28),.057,shirt);
+        segment(arm,new THREE.Vector3(side*.12,-.36,.28),new THREE.Vector3(side*.11,-.35,.64),.051,skin);
+        ball(arm,skin,[side*.11,-.35,.64],[.074,.045,.1]);
+      }
+      return {leftArm,rightArm};
+    }
     function makeActor(player: PublicPlayer) {
       const root = new THREE.Group(); world.add(root); chair(root);
       const shirt = standard(`hsl(${(player.seat * 47 + 27) % 360}, 35%, 43%)`);
       const trouser = standard('#24252a');
-      segment(root, new THREE.Vector3(0, .82, 0), new THREE.Vector3(0, 1.51, 0), .12, shirt);
-      ball(root, shirt, [0, 1.49, 0], [.28, .1, .13]);
-      segment(root, new THREE.Vector3(0, 1.49, 0), new THREE.Vector3(0, 1.74, 0), .061, skin);
+      segment(root, new THREE.Vector3(0, .82, 0), new THREE.Vector3(0, 1.63, 0), .12, shirt);
+      ball(root, shirt, [0, 1.61, 0], [.28, .1, .13]);
+      segment(root, new THREE.Vector3(0, 1.61, 0), new THREE.Vector3(0, 1.94, 0), .061, skin);
       for (const x of [-.14, .14]) {
         segment(root, new THREE.Vector3(x, .83, .02), new THREE.Vector3(x, .49, .38), .075, trouser);
         segment(root, new THREE.Vector3(x, .49, .38), new THREE.Vector3(x, .1, .35), .065, trouser);
         ball(root, hair, [x, .08, .42], [.09, .07, .17]);
       }
-      const leftArm = new THREE.Group(), rightArm = new THREE.Group(); root.add(leftArm, rightArm);
-      for (const [side, arm] of [[-1, leftArm], [1, rightArm]] as const) {
-        arm.position.set(side * .27, 1.48, 0);
-        segment(arm, new THREE.Vector3(), new THREE.Vector3(side * .12, -.29, .23), .057, shirt);
-        segment(arm, new THREE.Vector3(side * .12, -.29, .23), new THREE.Vector3(side * .11, -.27, .55), .051, skin);
-        ball(arm, skin, [side * .11, -.27, .55], [.074, .035, .09]);
-      }
-      const head = new THREE.Group(); head.position.set(0, 1.84, 0); root.add(head);
+      const {leftArm,rightArm}=makeArms(root,shirt);
+      const head = new THREE.Group(); head.position.set(0, 2.04, 0); root.add(head);
       ball(head, skin, [0, .12, 0], [.27, .31, .255]);
       for (const x of [-.267, .267]) ball(head, skin, [x, .115, 0], [.049, .073, .05]);
       ball(head, hair, [0, .335, -.05], [.275, .095, .229]);
@@ -408,20 +446,206 @@ export function ThreePokerScene(props: SceneProps) {
       };
       void video.play().catch(() => { /* A blocked video keeps the expressive character face. */ });
     }
-    const pot = sprite(labelTexture('POT', '0'), 1.05, .31, boards); pot.position.set(1.8, 1.38, .25);
-    const boardLabels = ['BOARD I', 'BOARD II'].map(label => sprite(drawTexture(256, 64, ctx => {
-      ctx.fillStyle = '#111925da'; ctx.beginPath(); ctx.roundRect(0, 0, 256, 64, 14); ctx.fill();
-      ctx.fillStyle = palette.accent; ctx.font = '700 34px system-ui'; ctx.textAlign = 'center'; ctx.fillText(label, 128, 44);
-    }), .88, .22, boards));
-    const handSkin = standard('#e3b58e', { roughness: .6 });
-    const sleeve = standard('#242b37', { roughness: .88 });
-    for (const side of [-1, 1]) {
-      segment(hands, new THREE.Vector3(side * .74, -.92, -.55), new THREE.Vector3(side * .41, -.64, -1.25), .084, sleeve);
-      segment(hands, new THREE.Vector3(side * .41, -.64, -1.25), new THREE.Vector3(side * .28, -.56, -1.37), .058, handSkin);
-      ball(hands, handSkin, [side * .25, -.545, -1.37], [.1, .066, .14]);
-      for (let i = 0; i < 4; i++) {
-        segment(hands, new THREE.Vector3(side * (.17 + i * .032), -.54, -1.39), new THREE.Vector3(side * (.16 + i * .032), -.43, -1.43), .013, handSkin);
+    const boardLabels = ['BOARD I','BOARD II'].map(label=>sprite(drawTexture(256,64,ctx=>{
+      ctx.fillStyle='#111925da';ctx.beginPath();ctx.roundRect(0,0,256,64,14);ctx.fill();
+      ctx.fillStyle=palette.accent;ctx.font='700 34px system-ui';ctx.textAlign='center';ctx.fillText(label,128,44);
+    }),.72,.18,boards));
+    hands.position.set(0,0,2.8);hands.rotation.y=Math.PI;
+    const ownArms=makeArms(hands,standard('#242b37'));
+
+    const chipGeometry=geometry(new THREE.CylinderGeometry(.078,.078,.028,20));
+    const chipPaints=new Map<number,THREE.Material[]>();
+    for(const chip of CHIP_VALUES){
+      const edge=drawTexture(256,32,ctx=>{
+        ctx.fillStyle=chip.color;ctx.fillRect(0,0,256,32);ctx.fillStyle='#f3e5bf';
+        for(let x=0;x<256;x+=32)ctx.fillRect(x+3,1,10,30);
+        ctx.fillStyle='#0004';ctx.fillRect(0,27,256,5);
+      });
+      const top=drawTexture(128,128,ctx=>{
+        ctx.fillStyle=chip.color;ctx.fillRect(0,0,128,128);ctx.strokeStyle='#f3e5bf';ctx.lineWidth=7;
+        ctx.setLineDash([12,10]);ctx.beginPath();ctx.arc(64,64,55,0,Math.PI*2);ctx.stroke();ctx.setLineDash([]);
+        ctx.lineWidth=2;ctx.beginPath();ctx.arc(64,64,40,0,Math.PI*2);ctx.stroke();
+        ctx.fillStyle=chip.value===1?'#25312b':'#fff7da';ctx.font=`700 ${chip.value>=1000?25:32}px system-ui`;ctx.textAlign='center';ctx.fillText(String(chip.value),64,75);
+      });
+      const side=standard('#ffffff',{map:edge,roughness:.5}),face=standard('#ffffff',{map:top,roughness:.5});
+      chipPaints.set(chip.value,[side,face,face]);
+    }
+    const instance=new THREE.Object3D();
+    function fillChipStack(group:THREE.Group,amount:number){
+      if(group.userData.amount===amount)return;group.userData.amount=amount;clear(group);
+      let used=0,tower=0;
+      for(const chip of chipBreakdown(amount)){
+        const count=Math.min(chip.count,80,Math.max(0,128-used));if(!count)continue;
+        const batch=new THREE.InstancedMesh(chipGeometry,chipPaints.get(chip.value)!,count);group.add(batch);
+        for(let i=0;i<count;i++){
+          const column=tower+Math.floor(i/18),level=i%18;
+          instance.position.set((column%4-1.5)*.175,.014+level*.029,Math.floor(column/4)*.18);
+          instance.rotation.set(0,(i%5)*.31,0);instance.updateMatrix();batch.setMatrixAt(i,instance.matrix);
+        }
+        batch.instanceMatrix.needsUpdate=true;batch.castShadow=true;batch.receiveShadow=true;
+        batch.computeBoundingSphere();tower+=Math.ceil(count/18);used+=count;
       }
+    }
+    const potChips=new THREE.Group();chipsOnTable.add(potChips);
+    function potPoint(room:RoomView){
+      const lines=[room.board,...(room.isDoubleBarrel?[room.boardTwo]:[])].reduce((sum,row)=>sum+Math.max(1,Math.ceil(row.length/(row.length>9?8:Math.max(5,row.length)))),0);
+      return new THREE.Vector3(lines>2?(narrow?1.85:2.5):(narrow?1.15:1.65),FELT_Y,lines>2?-.35:.98);
+    }
+    function updateChipStacks(room:RoomView){
+      const ids=new Set(room.players.map(p=>p.id));
+      for(const [id,group] of stackGroups)if(!ids.has(id)){clear(group);group.removeFromParent();stackGroups.delete(id);}
+      for(const player of room.players){
+        let group=stackGroups.get(player.id);if(!group){group=new THREE.Group();chipsOnTable.add(group);stackGroups.set(player.id,group);}
+        group.position.copy(playerPoint(room,player.id,player.id===room.me?-1.25:-.42,player.id===room.me?1.1:1.15));
+        group.rotation.y=placement(room,player.id).facing;group.scale.setScalar(narrow?.8:1);fillChipStack(group,player.stack);
+      }
+      potChips.position.copy(potPoint(room));
+      fillChipStack(potChips,room.phase==='showdown'?room.result?.payouts.reduce((sum,p)=>sum+p.amount,0)||0:room.pot);
+    }
+    function throwChips(room:RoomView,id:string,amount:number,time:number){
+      if(reducedMotion)return;
+      const source=playerPoint(room,id,id===room.me?-1.25:-.42,1.12,FELT_Y+.25),chips=chipBreakdown(amount);
+      let index=0;
+      for(const chip of chips)for(let i=0;i<Math.min(chip.count,3)&&index<8;i++,index++){
+        const object=mesh(chipGeometry,chipPaints.get(chip.value)!,flyingChips);
+        const target=potPoint(room).add(new THREE.Vector3((index%3-1)*.14,.02+Math.floor(index/3)*.029,(i-1)*.13));
+        moveObject(object,source,target,time+index*38,700,.5,Math.PI*2,true);
+      }
+    }
+    const knockGeometry=geometry(new THREE.TorusGeometry(.13,.009,6,32));
+    const knockRings:{object:THREE.Mesh;start:number}[]=[];
+    function knock(room:RoomView,id:string,time:number){
+      if(reducedMotion)return;
+      const ring=mesh(knockGeometry,material(new THREE.MeshBasicMaterial({color:palette.accent,transparent:true,opacity:.5,depthWrite:false})),flyingChips);
+      ring.rotation.x=-Math.PI/2;ring.position.copy(playerPoint(room,id,.38,.67,FELT_Y+.015));knockRings.push({object:ring,start:time});
+    }
+
+    function pips(ctx:CanvasRenderingContext2D,value:number,size:number){
+      const positions:Record<number,[number,number][]>= {
+        1:[[.5,.5]],2:[[.27,.27],[.73,.73]],3:[[.27,.27],[.5,.5],[.73,.73]],
+        4:[[.27,.27],[.73,.27],[.27,.73],[.73,.73]],
+        5:[[.27,.27],[.73,.27],[.5,.5],[.27,.73],[.73,.73]],
+        6:[[.27,.25],[.73,.25],[.27,.5],[.73,.5],[.27,.75],[.73,.75]],
+      };
+      ctx.fillStyle='#24342f';for(const [x,y] of positions[value]||[]){ctx.beginPath();ctx.arc(x*size,y*size,size*.075,0,Math.PI*2);ctx.fill();}
+    }
+    const diePaints=[3,4,1,6,2,5].map(value=>standard('#ffffff',{map:drawTexture(128,128,ctx=>{
+      ctx.fillStyle='#f7edda';ctx.fillRect(0,0,128,128);ctx.strokeStyle='#cdb98f';ctx.lineWidth=5;ctx.strokeRect(2,2,124,124);pips(ctx,value,128);
+    }),roughness:.48}));
+    const die=mesh(geometry(new THREE.BoxGeometry(.29,.29,.29)),diePaints,world);die.visible=false;
+    const dieBadge=sprite(labelTexture('DIE ON THE RIVER',''),1.15,.37,world);dieBadge.visible=false;
+    const dieRotation=new THREE.Quaternion();
+    function dieOrientation(value:number){
+      const angles:Record<number,[number,number,number]>={1:[0,0,0],2:[-Math.PI/2,0,0],3:[0,0,Math.PI/2],4:[0,0,-Math.PI/2],5:[Math.PI/2,0,0],6:[Math.PI,0,0]};
+      return new THREE.Quaternion().setFromEuler(new THREE.Euler(...angles[value]));
+    }
+    const wave=new THREE.Group();world.add(wave);wave.visible=false;
+    const water=material(new THREE.MeshBasicMaterial({color:'#61c8ee',transparent:true,opacity:.4,side:THREE.DoubleSide,depthWrite:false}));
+    const foam=material(new THREE.MeshBasicMaterial({color:'#ebfbff',transparent:true,opacity:.8,depthWrite:false}));
+    const waterSheet=mesh(geometry(new THREE.PlaneGeometry(4.8,.72,24,6)),water,wave);waterSheet.rotation.x=-Math.PI/2;waterSheet.castShadow=false;
+    for(let i=0;i<30;i++)ball(wave,foam,[-2.3+i*.16,.02,.27+Math.sin(i*.9)*.055],[.085,.016,.037]);
+    function updateSideEffects(room:RoomView,time:number){
+      if(room.dieRiverRoll!=null&&dieValue!==room.dieRiverRoll){dieValue=room.dieRiverRoll;dieStarted=time-DIE_ROLL_MS;}
+      die.visible=!!dieValue&&room.isDieRiver;
+      if(die.visible){
+        const t=Math.min(1,Math.max(0,(time-dieStarted)/DIE_ROLL_MS));
+        const end=new THREE.Vector3(-1.65,FELT_Y+.15,-.35);
+        die.position.set(-.6-(1.05*t),end.y+Math.abs(Math.sin(t*Math.PI*4))*(1-t)*.72,1.35-1.7*t);
+        dieRotation.copy(dieOrientation(dieValue));
+        if(t<.78)die.quaternion.setFromEuler(new THREE.Euler(t*Math.PI*9,t*Math.PI*7,t*Math.PI*5));
+        else die.quaternion.slerp(dieRotation,Math.min(1,(t-.78)/.16));
+        if(t===1){die.position.copy(end);die.quaternion.copy(dieRotation);}
+        dieBadge.visible=t===1;dieBadge.position.set(-1.65,1.85,-.35);
+        if(dieBadge.userData.value!==dieValue){dieBadge.userData.value=dieValue;setSpriteTexture(dieBadge,labelTexture(`ROLLED ${dieValue}`,dieValue===6?'Board intact':`Replace card ${dieValue}`));}
+      }else dieBadge.visible=false;
+      const waveT=(time-oceanStarted)/OCEAN_WAVE_MS;
+      wave.visible=!reducedMotion&&waveT>=0&&waveT<1;
+      if(wave.visible){wave.position.set(0,FELT_Y+.025,-2.2+4.2*waveT);wave.scale.y=1+Math.sin(waveT*Math.PI)*2;water.opacity=Math.sin(waveT*Math.PI)*.42;foam.opacity=Math.sin(waveT*Math.PI)*.86;}
+    }
+
+    let posterVideo:HTMLVideoElement|null=null,posterStream:MediaStream|null=null;
+    const posterFrame=new THREE.Group();posterFrame.position.set(1.6,3.1,-7.87);world.add(posterFrame);posterFrame.visible=false;
+    block(posterFrame,wood,[0,0,-.04],[2.75,3.2,.09]);
+    const posterPaint=material(new THREE.MeshBasicMaterial({color:'#ffffff',toneMapped:false}));
+    mesh(geometry(new THREE.PlaneGeometry(2.55,3.0)),posterPaint,posterFrame,[0,0,.015]);
+    function updateBountyPoster(room:RoomView){
+      const queued=room.vote?.kind==='bounty'?room.vote:null,bounty=room.bounty,outcome=room.bountyOutcome;
+      posterFrame.visible=!!(queued||bounty||outcome);if(!posterFrame.visible)return;
+      const stream=!queued&&!bounty&&outcome?.loserId===room.me?live.current.localStream:null;
+      if(stream!==posterStream){
+        if(posterVideo){posterVideo.pause();posterVideo.srcObject=null;posterVideo.remove();posterVideo=null;}
+        posterStream=stream;if(stream){posterVideo=document.createElement('video');posterVideo.muted=true;posterVideo.playsInline=true;posterVideo.srcObject=stream;void posterVideo.play().catch(()=>{});}
+      }
+      const video=outcome?.loserId===room.me?posterVideo:actors.get(outcome?.loserId||'')?.video;
+      const photoReady=!!video&&video.readyState>=2;
+      const signature=queued?`vote/${queued.id}`:bounty?`active/${bounty.amount}/${bounty.players.join()}/${bounty.won.join()}`:`lost/${outcome?.loserId}/${outcome?.completedAt}/${photoReady}`;
+      if(signature===posterSignature)return;posterSignature=signature;
+      const next=drawTexture(640,900,ctx=>{
+        ctx.fillStyle='#e8d5a8';ctx.fillRect(0,0,640,900);
+        for(let i=0;i<250;i++){ctx.fillStyle=i%2?'#684a1b0b':'#fff7da20';ctx.fillRect((i*97)%640,(i*211)%900,3,3);}
+        ctx.strokeStyle='#765132';ctx.lineWidth=8;ctx.strokeRect(20,20,600,860);ctx.fillStyle='#41291f';ctx.textAlign='center';ctx.font='900 88px Georgia';ctx.fillText('WANTED',320,117);
+        ctx.font='700 27px Georgia';ctx.fillText(queued?'BOUNTY PROPOSED':bounty?'LAST WITHOUT A WIN':'BOUNTY COMPLETE',320,168);
+        if(!queued&&!bounty&&outcome){
+          ctx.fillStyle=`hsl(${(outcome.loserSeat*47+27)%360},35%,43%)`;ctx.beginPath();ctx.moveTo(143,570);ctx.quadraticCurveTo(150,409,320,431);ctx.quadraticCurveTo(485,409,499,570);ctx.fill();
+          ctx.fillStyle='#eac49c';ctx.beginPath();ctx.ellipse(320,350,125,155,0,0,Math.PI*2);ctx.fill();
+          if(photoReady&&video){ctx.save();ctx.beginPath();ctx.ellipse(320,350,120,150,0,0,Math.PI*2);ctx.clip();ctx.drawImage(video,195,200,250,300);ctx.restore();}
+          else {ctx.fillStyle='#292124';ctx.beginPath();ctx.ellipse(320,213,126,34,0,Math.PI,Math.PI*2);ctx.fill();ctx.drawImage(faceTexture('fold').image as HTMLCanvasElement,205,230,230,245);}
+          ctx.font='800 49px Georgia';ctx.fillStyle='#41291f';ctx.fillText(outcome.loserName,320,655,530);
+          ctx.font='600 30px Georgia';ctx.fillText('Last without a win',320,720);ctx.fillText(`${outcome.amount.toLocaleString()} chips to each friend`,320,770,530);
+        }else{
+          const ids=bounty?.players||queued!.voters,won=bounty?.won||[];
+          ids.forEach((id,index)=>{const y=240+index*49,name=room.players.find(p=>p.id===id)?.name||'Friend';ctx.font='700 35px Georgia';ctx.fillStyle=won.includes(id)?'#8e8069':'#41291f';ctx.fillText(name,320,y,500);
+            if(won.includes(id)){ctx.strokeStyle='#a43b33';ctx.lineWidth=6;ctx.beginPath();ctx.moveTo(100,y-17);ctx.lineTo(540,y-7);ctx.stroke();}
+          });
+          ctx.fillStyle='#41291f';ctx.font='700 31px Georgia';ctx.fillText(`${(bounty?.amount||queued?.amount||0).toLocaleString()} CHIPS EACH`,320,820);ctx.font='25px Georgia';ctx.fillText('Win a hand. Cross your name off.',320,860);
+        }
+      });
+      retireTexture(posterPaint.map);posterPaint.map=next;posterPaint.needsUpdate=true;
+    }
+
+    function processEvents(room:RoomView,time:number){
+      if(eventHand!==room.handNo){eventHand=room.handNo;clear(muck);for(const ring of knockRings){materials.delete(ring.object.material as THREE.Material);(ring.object.material as THREE.Material).dispose();}clear(flyingChips);knockRings.length=0;gestures.clear();dealerCue=null;dieValue=0;boardBeforeDie=null;dieStarted=oceanStarted=-Infinity;}
+      const events=room.tableEvents||[];
+      if(!eventsInitialized){events.forEach(event=>seenEvents.add(event.id));eventsInitialized=true;return;}
+      const present=new Set(events.map(event=>event.id));for(const id of seenEvents)if(!present.has(id))seenEvents.delete(id);
+      for(const event of events){
+        if(seenEvents.has(event.id))continue;seenEvents.add(event.id);
+        if(event.handNo!==room.handNo||live.current.now-event.at>12000)continue;
+        if(event.type==='deal'){dealerCue={handNo:room.handNo,start:time,players:event.players,rounds:event.rounds,dealerId:event.dealerId};}
+        if(event.type==='ocean')oceanStarted=time;
+        if(event.type==='die'){boardBeforeDie=[...lastShownBoard];dieValue=event.roll;dieStarted=reducedMotion?time-DIE_ROLL_MS:time;}
+        if(event.type==='bet'){throwChips(room,event.playerId,event.amount,time);gestures.set(event.playerId,{kind:'bet',start:time});}
+        if(event.type==='check'){gestures.set(event.playerId,{kind:'check',start:time});knock(room,event.playerId,time);}
+        if(event.type==='fold'){
+          gestures.set(event.playerId,{kind:'fold',start:time});
+          const count=room.players.find(p=>p.id===event.playerId)?.hole.length||2;
+          for(let i=0;i<count;i++){
+            const target=new THREE.Vector3((narrow?-2.08:-2.45)+(i%3)*.045,FELT_Y+.013+(muck.children.length)*.006,.85+(i%2)*.05);
+            const card=makeCard('?',muck,target,new THREE.Euler(-Math.PI/2,0,(i-1)*.08));card.scale.setScalar(1.15);
+            moveObject(card,playerPoint(room,event.playerId,(i-(count-1)/2)*.25,.95,FELT_Y+.045),target,time+i*40,780,.34,Math.PI*3);
+          }
+        }
+      }
+    }
+    function animateMotions(time:number){
+      for(let i=motions.length-1;i>=0;i--){
+        const motion=motions[i],t=Math.max(0,Math.min(1,(time-motion.start)/motion.duration));
+        motion.object.visible=time>=motion.start;if(time<motion.start)continue;
+        motion.object.position.lerpVectors(motion.from,motion.target,1-Math.pow(1-t,2));motion.object.position.y+=Math.sin(t*Math.PI)*motion.arc;
+        motion.object.quaternion.copy(motion.rotation).multiply(new THREE.Quaternion().setFromAxisAngle(worldUp,motion.spin*(1-t)));
+        if(t===1){motion.object.position.copy(motion.target);motion.object.quaternion.copy(motion.rotation);if(motion.remove)motion.object.removeFromParent();motions.splice(i,1);}
+      }
+      for(let i=knockRings.length-1;i>=0;i--){const ring=knockRings[i],t=(time-ring.start)/750;ring.object.scale.setScalar(1+t*2);(ring.object.material as THREE.MeshBasicMaterial).opacity=Math.max(0,.45*(1-t));if(t>=1){ring.object.removeFromParent();materials.delete(ring.object.material as THREE.Material);(ring.object.material as THREE.Material).dispose();knockRings.splice(i,1);}}
+    }
+    function animateArms(arms:{leftArm:THREE.Group;rightArm:THREE.Group},id:string,time:number,rest=0){
+      let x=rest,y=0,z=0;
+      const gesture=gestures.get(id),t=gesture?(time-gesture.start)/1000:2;
+      if(gesture&&t<1&&!reducedMotion){
+        if(gesture.kind==='check')x=-Math.abs(Math.sin(t*Math.PI*4))*.3;
+        else{x=-Math.sin(t*Math.PI)*.35;y=-Math.sin(t*Math.PI)*.3;z=Math.sin(t*Math.PI)*.12;}
+      }else if(gesture)gestures.delete(id);
+      if(dealerCue?.dealerId===id&&!reducedMotion){const dealT=time-dealerCue.start;if(dealT<dealerCue.players.length*dealerCue.rounds*105+600){const sweep=Math.max(0,Math.sin(dealT/105*Math.PI));x=-.12-sweep*.3;y=sweep*.4;z=sweep*.12;}}
+      arms.rightArm.rotation.set(x,y,z);arms.leftArm.rotation.x=rest;
     }
 
     function resize() {
@@ -429,14 +653,9 @@ export function ThreePokerScene(props: SceneProps) {
       narrow = width < 700;
       renderer.setSize(width, height, false); camera.aspect = width / height;
       // The same physical room stays visible in portrait; the spectator sits slightly back.
-      camera.fov = narrow ? 80 : 61;
-      camera.position.set(0, narrow ? 2.48 : 2.27, narrow ? 5.5 : 4.55);
+      camera.fov = narrow ? 86 : 67;
+      camera.position.set(0,narrow?3.15:2.72,narrow?5.4:4.15);
       table.scale.x = narrow ? .7 : 1;
-      pot.position.set(narrow ? 1.65 : 2.2, 1.38, narrow ? -1.2 : .4);
-      hands.position.y = heldCards.position.y = narrow ? .16 : -.12;
-      // Scaling a camera-attached group scales its distance too, leaving cards
-      // the same apparent size. Scale the card meshes independently instead.
-      hands.scale.setScalar(1); heldCards.scale.setScalar(1);
       camera.updateProjectionMatrix(); renderer.shadowMap.enabled = !narrow;
       layoutSignature = '';
       boardSignature = '';
@@ -458,82 +677,62 @@ export function ThreePokerScene(props: SceneProps) {
         const span = Math.min(1, (count - 1) / 5);
         const progress = count === 2 ? .5 : (1 - span) / 2 + (offset - 1) / (count - 2) * span;
         const angle = progress * Math.PI;
-        const x = -3.86 * Math.cos(angle) * (narrow ? .7 : 1), z = -.6 - 2.2 * Math.sin(angle);
+        const x = -(narrow ? 2.38 : 3.86) * Math.cos(angle), z = (narrow ? -1.1 : -.6) - (narrow ? 1.8 : 2.2) * Math.sin(angle);
         const facing = Math.atan2(-x, -z);
         const player = room.players.find(candidate => candidate.seat === seat);
         if (player) {
           const actor = actors.get(player.id) || makeActor(player);
           actor.root.position.set(x, 0, z); actor.root.rotation.y = facing;
-          actor.nameplate.position.set(x * (narrow ? .86 : .96), 2.48, z + .05); actor.nameplate.scale.set(narrow ? 1.13 : 1.25, narrow ? .34 : .37, 1);
-          actor.reaction.position.set(x + .44, 2.65, z); actor.reaction.scale.setScalar(narrow ? .58 : .46);
+          actor.nameplate.position.set(x * (narrow ? .86 : .96), 2.78, z + .05); actor.nameplate.scale.set(narrow ? 1.13 : 1.25, narrow ? .34 : .37, 1);
+          actor.reaction.position.set(x + .44, 2.95, z); actor.reaction.scale.setScalar(narrow ? .58 : .46);
         } else {
           const empty = new THREE.Group(); empty.position.set(x, 0, z); empty.rotation.y = facing; chair(empty); emptySeats.add(empty);
         }
       }
     }
-    function updateCards(room: RoomView, time: number) {
-      const signature = `${room.handNo}/${room.board.join(',')}/${room.boardTwo.join(',')}/${room.phase === 'waiting'}`;
-      if (signature !== boardSignature) {
-        const previous = boardSignature; boardSignature = signature;
-        for (const child of [...boards.children]) if (child !== pot) boards.remove(child);
-        const rows = room.isDoubleBarrel ? [room.board, room.boardTwo] : [room.board];
-        const lineCounts = rows.map(row => Math.max(1, Math.ceil(row.length / (row.length > 9 ? 8 : Math.max(5, row.length)))));
-        const totalLines = lineCounts.reduce((sum, count) => sum + count, 0);
-        const boardScale = totalLines > 4 ? 1 : 1.5;
-        const boardStart = totalLines > 2 ? -1.6 : narrow ? (room.isDoubleBarrel ? -1.9 : -1.4) : room.isDoubleBarrel ? -.45 : .5;
-        const lineSpacing = totalLines > 2 ? Math.min(.93, 3.2 / (totalLines - 1)) : narrow ? .8 : .93;
-        let firstLine = 0;
-        rows.forEach((row, rowIndex) => {
-          const total = row.length;
-          const rowGroup = new THREE.Group(); boards.add(rowGroup);
-          if (room.isDoubleBarrel) {
-            const label = boardLabels[rowIndex]; boards.add(label); label.position.set(narrow ? -1.8 : -2.23, 1.45, boardStart + firstLine * lineSpacing);
-          }
-          // Long Red River boards wrap on the felt instead of disappearing off the table.
-          for (let i = 0; i < total; i++) {
-            const perRow = total > 9 ? 8 : Math.max(5, total); const line = Math.floor(i / perRow); const inLine = Math.min(perRow, total - line * perRow);
-            const spacing = total > 7 ? .32 : .445;
-            const scale = boardScale * (total > 7 ? .84 : 1);
-            const boardTilt = -Math.PI / 2 + .4;
-            const target = new THREE.Vector3((i % perRow - (inLine - 1) / 2) * spacing * boardScale, 1.18 + .2825 * Math.cos(boardTilt) * scale + i * .0002, boardStart + (firstLine + line) * lineSpacing);
-            const card = makeCard(row[i], rowGroup, target, new THREE.Euler(boardTilt, 0, 0), i * 75);
+    function updateCards(room:RoomView,time:number) {
+      const firstBoard=boardBeforeDie?.length===5&&time-dieStarted<DIE_ROLL_MS?boardBeforeDie:room.board;
+      const signature=`${room.handNo}/${firstBoard.join(',')}/${room.boardTwo.join(',')}/${room.phase==='waiting'}`;
+      if(signature!==boardSignature){
+        const previous=boardSignature;boardSignature=signature;clear(boards);
+        const rows=room.isDoubleBarrel?[firstBoard,room.boardTwo]:[firstBoard];
+        const lineCounts=rows.map(row=>Math.max(1,Math.ceil(row.length/(row.length>9?8:Math.max(5,row.length)))));
+        const totalLines=lineCounts.reduce((sum,count)=>sum+count,0),boardScale=totalLines>4?.85:totalLines>2?1:narrow?1.3:1.5;
+        const boardStart=totalLines>2?-1.55:totalLines>1?-.55:0;
+        const lineSpacing=totalLines>2?Math.min(.8,2.2/(totalLines-1)):.94;
+        let firstLine=0;
+        rows.forEach((row,rowIndex)=>{
+          const rowGroup=new THREE.Group();boards.add(rowGroup);
+          if(room.isDoubleBarrel){const label=boardLabels[rowIndex];boards.add(label);label.position.set(narrow?0:-2.15,1.31,boardStart+firstLine*lineSpacing-(narrow?.47:0));}
+          for(let i=0;i<row.length;i++){
+            const perRow=row.length>9?8:Math.max(5,row.length),line=Math.floor(i/perRow),inLine=Math.min(perRow,row.length-line*perRow);
+            const spacing=row.length>7?.32:.445,scale=boardScale*(row.length>7?.84:1);
+            const target=new THREE.Vector3((i%perRow-(inLine-1)/2)*spacing*boardScale,FELT_Y+.008+i*.0002,boardStart+(firstLine+line)*lineSpacing);
+            const existing=previous.split('/')[0]===String(room.handNo)&&previous.split('/')[rowIndex+1]?.split(',')[i]===row[i];
+            const ocean=room.isOcean&&i===5&&!existing&&time-oceanStarted<OCEAN_WAVE_MS;
+            const card=makeCard(row[i],rowGroup,target,new THREE.Euler(-Math.PI/2,0,0),i*75,!existing&&!ocean&&previous?dealerOrigin(room):undefined);
             card.scale.setScalar(scale);
-            if (previous && previous.split('/')[0] === String(room.handNo)) {
-              const existing = previous.split('/')[rowIndex + 1]?.split(',') || [];
-              if (existing[i] === row[i]) {
-                const animationIndex = dealAnimations.findIndex(animation => animation.object === card);
-                if (animationIndex >= 0) dealAnimations.splice(animationIndex, 1);
-                card.position.copy(target);
-              }
-            }
+            if(ocean)moveObject(card,new THREE.Vector3(target.x,FELT_Y+.018,-2.05),target,oceanStarted+200,1100,.025,0);
           }
-          firstLine += lineCounts[rowIndex];
+          firstLine+=lineCounts[rowIndex];
         });
+        lastShownBoard=[...firstBoard];
       }
-      const own = room.players.find(player => player.id === room.me);
-      hands.position.x = heldCards.position.x = narrow ? 0 : -.72;
-      const ownSignature = `${room.handNo}/${own?.hole.join(',')}/${own?.folded}`;
-      if (ownSignature !== handSignature) {
-        handSignature = ownSignature; clear(heldCards);
-        const cards = own?.hole || [];
-        cards.forEach((card, i) => {
-          const offset = i - (cards.length - 1) / 2;
-          const spacing=narrow?(cards.length>3?.13:.22):(cards.length>3?.17:.3);
-          const target = new THREE.Vector3(offset * spacing, -.25 - Math.abs(offset) * (narrow ? .008 : .025), -1.52 + i * (narrow ? .025 : .045));
-          const object = makeCard(card, heldCards, target, new THREE.Euler(-.045, offset * (narrow ? -.025 : -.045), offset * (narrow ? -.055 : -.13)), i * 95, true);
-          object.scale.setScalar((narrow ? .55 : .72) * (own?.folded ? .9 : 1));
-        });
-      }
-      const amount = room.phase === 'showdown' ? room.result?.payouts.reduce((sum, payout) => sum + payout.amount, 0) || 0 : room.pot;
-      const nextPot = `${amount}`;
-      if (nextPot !== potLabel) { potLabel = nextPot; setSpriteTexture(pot, labelTexture(room.phase === 'showdown' ? 'LAST POT' : 'POT', amount.toLocaleString())); }
-      pot.visible = room.phase !== 'waiting';
-      for (let i = dealAnimations.length - 1; i >= 0; i--) {
-        const animation = dealAnimations[i], elapsed = (time - animation.start) / 650;
-        if (elapsed < 0) continue;
-        if (elapsed >= 1) { animation.object.position.copy(animation.target); dealAnimations.splice(i, 1); continue; }
-        const remaining = Math.pow(1 - elapsed, 3);
-        animation.object.position.copy(animation.target).add(animation.held ? new THREE.Vector3(-.35 * remaining, -.52 * remaining, -.3 * remaining) : new THREE.Vector3(0, .32 * remaining, -.8 * remaining));
+      const own=room.players.find(player=>player.id===room.me);
+      const shown=!!room.result?.revealed.includes(room.me);
+      const ownSignature=`${room.handNo}/${own?.hole.join(',')}/${own?.folded}/${shown}`;
+      if(ownSignature!==handSignature){
+        const newHand=handSignature.split('/')[0]!==String(room.handNo);handSignature=ownSignature;clear(heldCards);
+        if(!own?.folded||shown){
+          const cards=own?.hole||[];
+          cards.forEach((card,i)=>{
+            const offset=i-(cards.length-1)/2,spacing=cards.length>3?.33:.47;
+            const target=new THREE.Vector3(-.62+offset*spacing,FELT_Y+.013+i*.001,1.42+Math.abs(offset)*.018);
+            const delay=newHand?cardDealDelay(room,room.me,i):undefined;
+            const object=makeCard(card,heldCards,target,new THREE.Euler(-Math.PI/2,0,offset*-.05),delay||0,delay!==undefined?dealerOrigin(room):undefined);
+            object.scale.setScalar(cards.length>3?1.3:1.5);
+          });
+        }
       }
     }
     function updateActors(room: RoomView, now: number, time: number) {
@@ -543,7 +742,7 @@ export function ThreePokerScene(props: SceneProps) {
         const expression = characterExpression(player, room, now);
         const remotePose = live.current.poses[player.id] || { yaw: 0, pitch: 0 };
         const breathing = reducedMotion ? 0 : Math.sin((time - born) / 900 + actor.idlePhase) * .009;
-        actor.head.position.y = 1.84 + breathing;
+        actor.head.position.y = 2.04 + breathing;
         // Apply the sender's view-relative yaw in avatar space. The character
         // face is oriented toward the table, so reversing this value makes a
         // leftward camera turn appear as a rightward head turn to other seats.
@@ -552,8 +751,7 @@ export function ThreePokerScene(props: SceneProps) {
         const tilt = expression === 'thinking' ? -.12 : expression === 'fold' ? .11 : 0;
         actor.head.rotation.z += (tilt - actor.head.rotation.z) * .09;
         const armAngle = expression === 'winner' || expression === 'fire' ? -.8 : expression === 'thinking' ? -.25 : 0;
-        actor.rightArm.rotation.x += (armAngle - actor.rightArm.rotation.x) * .08;
-        actor.leftArm.rotation.x += ((expression === 'winner' ? -.8 : 0) - actor.leftArm.rotation.x) * .08;
+        animateArms(actor,player.id,time,armAngle);
         attachVideo(actor, live.current.streams[player.id]);
         const useVideo = actor.videoTexture && actor.video && actor.video.readyState >= 2;
         if (useVideo) cameraFaces++;
@@ -563,15 +761,15 @@ export function ThreePokerScene(props: SceneProps) {
         const title = `${player.name}${player.seat === room.dealerSeat ? ' · D' : ''}`;
         const label = `${title}/${player.stack}/${action}`;
         if (actor.label !== label) { actor.label = label; setSpriteTexture(actor.nameplate, labelTexture(title, player.stack.toLocaleString(), action, room.turnId === player.id)); }
-        const hole = `${room.handNo}/${player.hole.join(',')}/${player.folded}`;
-        if (actor.hole !== hole) {
-          actor.hole = hole; clear(actor.cards);
-          player.hole.forEach((card, i) => {
-            const offset = i - (player.hole.length - 1) / 2;
-            const object = makeCard(card, actor.cards, new THREE.Vector3(offset * .14, 1.39 + Math.abs(offset) * -.012, .6), new THREE.Euler(-.72, offset * -.08, offset * -.1), i * 65);
-            object.scale.setScalar(.75); if (player.folded) actor.cards.visible = false;
+        const shown=!!room.result?.revealed.includes(player.id);
+        const hole=`${room.handNo}/${player.hole.join(',')}/${player.folded}/${shown}`;
+        if(actor.hole!==hole){
+          const newHand=actor.hole?.split('/')[0]!==String(room.handNo);actor.hole=hole;clear(actor.cards);
+          if(!player.folded||shown)player.hole.forEach((card,i)=>{
+            const offset=i-(player.hole.length-1)/2,delay=newHand?cardDealDelay(room,player.id,i):undefined;
+            const object=makeCard(card,actor.cards,new THREE.Vector3(.24+offset*.25,FELT_Y+.008+i*.001,1.08),new THREE.Euler(-Math.PI/2,0,offset*-.04),delay||0,delay!==undefined?dealerOrigin(room):undefined);
+            object.scale.setScalar(room.settings.maxPlayers>7?.9:1.1);
           });
-          actor.cards.visible = !player.folded;
         }
         const reaction = player.reaction?.expiresAt && player.reaction.expiresAt > now ? player.reaction.emoji : '';
         const reactionKey = `${reaction}/${expression}`;
@@ -593,20 +791,24 @@ export function ThreePokerScene(props: SceneProps) {
       renderer.shadowMap.enabled=!narrow&&!videoActive;
       const { room, now, pose } = live.current;
       currentYaw += (pose.yaw - currentYaw) * .12; currentPitch += (pose.pitch - currentPitch) * .12;
-      topDownBlend += ((live.current.topDown ? 1 : 0) - topDownBlend) * .1;
-      const seatedY = narrow ? 2.48 : 2.27, seatedZ = narrow ? 5.5 : 4.55;
-      seatedPosition.set(0, seatedY, seatedZ);
-      overheadPosition.set(0, narrow ? 10.4 : 8.8, 0);
-      camera.position.lerpVectors(seatedPosition, overheadPosition, topDownBlend);
-      camera.up.copy(worldUp).lerp(overheadUp, topDownBlend).normalize();
-      const yaw = currentYaw * (narrow ? .44 : .52) * (1 - topDownBlend);
-      const baselinePitch = Math.atan2((narrow ? .45 : 1.47) - seatedY, seatedZ + .8);
-      const lookPitch = baselinePitch - currentPitch * .18 * (1 - topDownBlend);
-      seatedTarget.set(Math.sin(yaw) * 10, seatedY + Math.tan(lookPitch) * 10, seatedZ - 10 * Math.cos(yaw));
-      viewTarget.lerpVectors(seatedTarget, overheadTarget, topDownBlend);
+      const dt=previousFrame?Math.min(100,time-previousFrame):22;previousFrame=time;
+      const blendTarget=live.current.topDown?1:0;
+      topDownBlend=reducedMotion?blendTarget:THREE.MathUtils.damp(topDownBlend,blendTarget,4.5,dt/1000);
+      const seatedY=narrow?3.15:2.72,seatedZ=narrow?5.4:4.15;
+      seatedPosition.set(0,seatedY,seatedZ);
+      // Stand at the near rail and lean forward, keeping the room's vertical upright.
+      overheadPosition.set(0,narrow?3.9:3.5,narrow?2.65:2.35);
+      camera.position.lerpVectors(seatedPosition,overheadPosition,topDownBlend);camera.up.copy(worldUp);
+      const yaw=currentYaw*(narrow?.44:.52)*(1-topDownBlend);
+      const baselinePitch=Math.atan2(FELT_Y-seatedY,seatedZ-.85);
+      const lookPitch=baselinePitch-currentPitch*.14*(1-topDownBlend);
+      seatedTarget.set(Math.sin(yaw)*10,seatedY+Math.tan(lookPitch)*10,seatedZ-10*Math.cos(yaw));
+      overheadTarget.set(0,FELT_Y,1.3);viewTarget.lerpVectors(seatedTarget,overheadTarget,topDownBlend);
       camera.lookAt(viewTarget);
-      updateLayout(room); updateCards(room, time); updateActors(room, now, time);
-      if (!reducedMotion) hands.rotation.z = Math.sin((time - born) / 2100) * .003;
+      const fov=(narrow?86:67)+6*topDownBlend;if(Math.abs(camera.fov-fov)>.02){camera.fov=fov;camera.updateProjectionMatrix();}
+      updateLayout(room);processEvents(room,time);updateCards(room,time);updateActors(room,now,time);
+      updateChipStacks(room);updateSideEffects(room,time);updateBountyPoster(room);animateMotions(time);
+      animateArms(ownArms,room.me,time);
       renderer.render(scene, camera);
       animationFrame = requestAnimationFrame(animate);
     }
@@ -619,6 +821,8 @@ export function ThreePokerScene(props: SceneProps) {
       disposed = true; cancelAnimationFrame(animationFrame); resizeObserver.disconnect();
       renderer.domElement.removeEventListener('webglcontextlost', contextLost);
       for (const actor of actors.values()) stopVideo(actor);
+      if(posterVideo){posterVideo.pause();posterVideo.srcObject=null;posterVideo.remove();}
+      for(const group of stackGroups.values())clear(group);clear(potChips);
       geometries.forEach(value => value.dispose()); materials.forEach(value => value.dispose()); textures.forEach(value => value.dispose());
       renderer.dispose(); renderer.forceContextLoss(); renderer.domElement.remove();
     };

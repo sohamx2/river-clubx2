@@ -4,6 +4,7 @@ import { useCallback,useEffect,useRef,useState,type CSSProperties,type PointerEv
 import { Camera,CameraOff,Focus,MousePointer2,Users } from 'lucide-react';
 import { PlayerSeat } from './PlayerSeat';
 import { CameraFace } from './CameraFace';
+import { TableSceneCues } from './TableSceneCues';
 import { useTablePresence } from './useTablePresence';
 import { useTablePeers } from './useTablePeers';
 import type { HeadPose } from '@/lib/presence-types';
@@ -78,6 +79,7 @@ export function TableScene({room,seconds,now,firstPerson,topDown,onInvite,childr
       const depth=(Math.sin(angle)+1)/2,reach=Math.min(seatOffset,count-seatOffset)/(count/2),side=seatOffset<=count/2?-1:1;
       return <PlayerSeat key={seat} p={player} room={room} seconds={seconds} now={now} onInvite={onInvite} style={{'--pov-left':`${50+42*Math.cos(angle)}%`,'--pov-top':`${52+35*Math.sin(angle)}%`,'--pov-mobile-left':`${50+side*40*Math.pow(Math.sin(Math.PI*reach),.6)}%`,'--pov-mobile-top':`${87-71*reach}%`,'--pov-scale':String(.8+depth*.23),'--seat-z':String(Math.round(20+depth*35))} as CSSProperties}/>;
     })}</div></>}
+    {render3D&&<TableSceneCues room={room} now={now}/>}
     {firstPerson&&<div className="first-person-tools"><div className="pov-control-row"><button className={`camera-toggle ${stream?'camera-live':''}`} onClick={toggleCamera} disabled={cameraBusy} aria-pressed={!!stream}>{stream?<CameraOff size={15}/>:<Camera size={15}/>} {cameraBusy?'Starting camera…':stream?'Turn camera off':'Use camera face'}</button><button className="center-view" onClick={center} aria-label="Center first-person view" title="Center view"><Focus size={16}/></button><span className="look-hint"><MousePointer2 size={12}/> Move to look · drag on touch</span>{stream&&<div className="local-face-preview"><CameraFace stream={stream} name="Your" local/></div>}</div><p className="camera-sharing-note">{webGLFailed?'3D graphics are unavailable in this browser. Table view is still playable.':stream?'Camera shared with this table · microphone off':!online?'Head movement is reconnecting. You can still play.':peers.failed?'Direct connection unavailable; head movement uses table updates.':'Optional video to your table · no microphone'}</p>{cameraError&&<p className="camera-error" role="status">{cameraError}</p>}</div>}
   </div>;
 }

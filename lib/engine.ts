@@ -1,13 +1,16 @@
 import { randomInt, randomUUID } from 'node:crypto';
 import { REACTION_EMOJIS,REACTION_DURATION_MS,REACTION_COOLDOWN_MS } from './reactions';
 import { evaluate,compare } from './evaluator';
-import type { Action,Player,Room,RoomView,Settings } from './types';
+import type { Action,Player,Room,RoomView,Settings,TableEvent } from './types';
 export class GameError extends Error { constructor(message:string,public status=400){super(message);} }
 function fail(message:string):never{throw new GameError(message);}
 const idle=(r:Room)=>r.phase==='waiting'||r.phase==='showdown';
 const active=(r:Room)=>r.players.filter(p=>p.inHand&&!p.folded);
 const ready=(r:Room)=>r.players.filter(p=>!p.sittingOut&&p.stack>0);
 function log(r:Room,text:string){r.logs.push({id:randomUUID(),text});r.logs=r.logs.slice(-50);}
+type EventDetail<T=TableEvent> = T extends TableEvent ? Omit<T,'id'|'handNo'|'at'> : never;
+/** Public presentation cues survive fast actions and street changes; no hole cards are stored. */
+function tableEvent(r:Room,event:EventDetail,now:number){r.tableEvents=[...(r.tableEvents||[]),{...event,id:randomUUID(),handNo:r.handNo,at:now}].slice(-48);}
 function next(r:Room,seat:number,list:Player[]):Player { return [...list].sort((a,b)=>((a.seat-seat+10)%10||10)-((b.seat-seat+10)%10||10))[0]; }
 function clearQueuedFormats(r:Room){r.vote=null;r.bombNext=null;r.oceanNext=null;r.dieRiverNext=null;r.pocketTripsNext=null;r.doubleBarrelNext=null;r.stripClubNext=null;r.redRiverNext=null;r.potOrNotNext=null;}
 function applyQueuedSeats(r:Room){
@@ -42,7 +45,7 @@ function releaseLegacyBountyReserve(r:Room){
 function cancelBounty(r:Room){if(!r.bounty)return;releaseLegacyBountyReserve(r);r.bounty=null;}
 function releaseLegacySevenDeuceReserve(r:Room){if(!r.sevenDeuce?.reserves)return;for(const [id,reserve] of Object.entries(r.sevenDeuce.reserves)){const p=r.players.find(p=>p.id===id);if(p)p.stack+=reserve;}delete r.sevenDeuce.reserves;delete r.sevenDeuce.reserve;delete r.sevenDeuce.players;}
 function cancelSevenDeuce(r:Room){if(!r.sevenDeuce)return;releaseLegacySevenDeuceReserve(r);r.sevenDeuce=null;}
-function bountyResult(r:Room,winningIds:string[]){
+function bountyResult(r:Room,winningIds:string[],now:number){
  const b=r.bounty;if(!b)return;
  b.won=[...new Set([...b.won,...winningIds.filter(id=>b.players.includes(id))])];
  const remaining=b.players.filter(id=>!b.won.includes(id));
@@ -54,6 +57,7 @@ function bountyResult(r:Room,winningIds:string[]){
  releaseLegacyBountyReserve(r);
  const opponents=b.players.filter(id=>id!==loser.id);loser.stack-=b.amount*opponents.length;
  for(const id of opponents){const winner=r.players.find(p=>p.id===id);if(winner)winner.stack+=b.amount;}
+ r.bountyOutcome={loserId:loser.id,loserName:loser.name,loserSeat:loser.seat,amount:b.amount,completedAt:now};
  log(r,`${loser.name} was last without a win and paid ${b.amount.toLocaleString()} to each player. Bounty complete.`);r.bounty=null;
 }
 function sevenDeuceResult(r:Room,winningIds:string[]){
@@ -68,7 +72,7 @@ function sevenDeuceResult(r:Room,winningIds:string[]){
  }
 }
 /** Settle each contribution tier independently; unmatched excess is a refund, never a hand win. */
-export function settle(r:Room){
+export function settle(r:Room,now=Date.now()){
  // Committed chips still belong to the player's starting bankroll until this hand settles.
  const before=new Map(r.players.map(p=>[p.id,p.stack+(p.inHand?p.contributed:0)+(r.bounty?.players.includes(p.id)?r.bounty.reserve||0:0)+(r.sevenDeuce?.reserves?.[p.id]||0)]));
  const players=r.players.filter(p=>p.inHand);const alive=active(r);
@@ -85,15 +89,17 @@ export function settle(r:Room){
   else {const ranked=rank(r.board);const winners=award(ranked.winners,amount,ranked.hand);if(index===0)mainWinners=winners.map(p=>p.id);}
  }
  const list=[...payouts.values()];const text=list.map(x=>`${players.find(p=>p.id===x.id)!.name} wins ${x.amount.toLocaleString()}${x.hand==='Uncontested'?'':` · ${x.hand}`}`).join(' / ')||'Uncalled chips returned.';
- r.result={text,winners:list.map(p=>p.id),payouts:list,board:[...r.board],...(r.isDoubleBarrel?{boardTwo:[...r.boardTwo]}:{}),revealed:[]};r.phase='showdown';r.turnId=null;r.deadline=null;log(r,text);bountyResult(r,mainWinners);sevenDeuceResult(r,mainWinners);
+ r.result={text,winners:list.map(p=>p.id),payouts:list,board:[...r.board],...(r.isDoubleBarrel?{boardTwo:[...r.boardTwo]}:{}),revealed:[]};r.phase='showdown';r.turnId=null;r.deadline=null;log(r,text);bountyResult(r,mainWinners,now);sevenDeuceResult(r,mainWinners);
  for(const p of r.players)p.netChips=(p.netChips||0)+p.stack-before.get(p.id)!;
  applyQueuedSeats(r);
 }
-function runOutBoard(r:Room){
+function runOutBoard(r:Room,now:number){
  const target=r.isOcean?6:5;
+ const oceanPending=r.isOcean&&r.board.length<6;
  while(r.board.length<target)streetCards(r,r.board.length===0?3:1);
  if(r.isDoubleBarrel)while(r.boardTwo.length<target)streetCards(r,r.boardTwo.length===0?3:1,r.boardTwo);
  extendRedRiver(r);if(r.isDoubleBarrel)extendRedRiver(r,r.boardTwo,'Board II');
+ if(oceanPending)tableEvent(r,{type:'ocean'},now);
  log(r,'The remaining community cards were shown after the fold.');
 }
 /** Extra Red River cards belong to the same street, so no extra burns or bets. */
@@ -114,23 +120,25 @@ function prepareStreet(r:Room,now:number){
  }
  return false;
 }
-function rollDieOnRiver(r:Room){
+function rollDieOnRiver(r:Room,now:number){
  if(!r.isDieRiver||r.dieRiverRoll!==null)return;
  const roll=randomInt(1,7);r.dieRiverRoll=roll;
+ tableEvent(r,{type:'die',roll},now);
  if(roll===6){log(r,'Die on the River rolled 6. The board stays intact.');return;}
  const old=r.board[roll-1];const replacement=deal(r,1)[0];r.board[roll-1]=replacement;log(r,`Die on the River rolled ${roll}. ${old} was replaced by ${replacement}.`);
 }
 function advance(r:Room,afterSeat:number,now:number){
- const alive=active(r);if(alive.length===1){runOutBoard(r);settle(r);return;}
+ const alive=active(r);if(alive.length===1){runOutBoard(r,now);settle(r,now);return;}
  const canAct=alive.filter(p=>p.stack>0);
  const pending=canAct.filter(p=>p.bet<r.currentBet||p.actedBet===null);
  // A lone funded player may only answer an outstanding wager; no dry-side-pot betting.
  if(pending.length&&(canAct.length>1||pending[0].bet<r.currentBet)){turn(r,next(r,afterSeat,pending),now);return;}
- if(r.phase==='river')rollDieOnRiver(r);
- if(r.phase==='ocean'||r.phase==='river'&&!r.isOcean){settle(r);return;}
+ if(r.phase==='river')rollDieOnRiver(r,now);
+ if(r.phase==='ocean'||r.phase==='river'&&!r.isOcean){settle(r,now);return;}
  r.phase=r.phase==='preflop'?'flop':r.phase==='flop'?'turn':r.phase==='turn'?'river':'ocean';streetCards(r,r.phase==='flop'?3:1);if(r.isDoubleBarrel)streetCards(r,r.phase==='flop'?3:1,r.boardTwo);
  if(r.phase==='river'){extendRedRiver(r);if(r.isDoubleBarrel)extendRedRiver(r,r.boardTwo,'Board II');}
  log(r,`${r.phase[0].toUpperCase()+r.phase.slice(1)} dealt.`);
+ if(r.phase==='ocean')tableEvent(r,{type:'ocean'},now);
  if(prepareStreet(r,now))return;
  if(canAct.length<2){advance(r,r.dealerSeat,now);return;}
  turn(r,next(r,r.dealerSeat,canAct),now);
@@ -157,11 +165,13 @@ function start(r:Room,now:number){
  for(const p of r.players){p.inHand=players.includes(p);p.hole=[];p.folded=false;p.allIn=false;p.bet=0;p.contributed=0;p.actedBet=null;p.lastAction=p.inHand?'':'Sitting out';}
  const order=[...players].sort((a,b)=>((a.seat-r.dealerSeat+10)%10||10)-((b.seat-r.dealerSeat+10)%10||10));
  for(let i=0;i<(r.isStripClub?5:r.isPocketTrips?3:2);i++)for(const p of order)p.hole.push(...deal(r,1));
+ tableEvent(r,{type:'deal',dealerId:players.find(p=>p.seat===r.dealerSeat)!.id,players:order.map(p=>p.id),rounds:holes},now);
  log(r,`Hand #${r.handNo}${r.isBomb?' · Bomb pot':''}${r.isOcean?' · Ocean':''}${r.isDieRiver?' · Die on the River':''}${r.isPocketTrips?' · Pocket Trips':''}${r.isDoubleBarrel?' · Double Barrel':''}${r.isStripClub?' · Strip Club':''}${r.isRedRiver?' · Red River':''}${r.isPotOrNot?' · Pot or Not':''}.`);
- if(r.bombNext){const amount=r.bombNext.amount;for(const p of players){pay(p,amount);p.bet=0;p.lastAction=`Ante ${amount}`;}r.bombNext=null;r.phase='flop';streetCards(r,3);if(r.isDoubleBarrel)streetCards(r,3,r.boardTwo);if(prepareStreet(r,now))return;advance(r,r.dealerSeat,now);return;}
+ if(r.bombNext){const amount=r.bombNext.amount;for(const p of players){pay(p,amount);tableEvent(r,{type:'bet',playerId:p.id,amount},now);p.bet=0;p.lastAction=`Ante ${amount}`;}r.bombNext=null;r.phase='flop';streetCards(r,3);if(r.isDoubleBarrel)streetCards(r,3,r.boardTwo);if(prepareStreet(r,now))return;advance(r,r.dealerSeat,now);return;}
  const dealer=players.find(p=>p.seat===r.dealerSeat)!;
  const sb=players.length===2?dealer:next(r,r.dealerSeat,players);const bb=next(r,sb.seat,players);
  pay(sb,r.settings.smallBlind);sb.lastAction=`SB ${sb.bet}`;pay(bb,r.settings.bigBlind);bb.lastAction=`BB ${bb.bet}`;
+ tableEvent(r,{type:'bet',playerId:sb.id,amount:sb.bet},now);tableEvent(r,{type:'bet',playerId:bb.id,amount:bb.bet},now);
  r.currentBet=r.settings.bigBlind;if(r.isPotOrNot){const fixedPot=players.reduce((sum,p)=>sum+p.contributed,0);r.currentBet=players.filter(p=>p.stack>0).length>1?fixedPot:Math.max(...players.map(p=>p.bet));r.potOrNotBet=r.currentBet;log(r,`Pot or Not: the fixed preflop wager is ${r.currentBet} chips.`);}advance(r,bb.seat,now);
 }
 function sameIds(a:string[],b:string[]){return a.length===b.length&&a.every(id=>b.includes(id));}
@@ -169,6 +179,7 @@ const votesNeeded=(v:{voters:string[]})=>Math.max(1,v.voters.length-1);
 function bet(r:Room,p:Player,move:'fold'|'check'|'call'|'raise',amount:number|undefined,now:number){
  if(r.turnId!==p.id||idle(r)||r.stripDiscard)fail('It is not your turn to bet.');
  const l=legal(r,p);
+ const contributedBefore=p.contributed;
  if(move==='fold'){p.folded=true;p.lastAction='Fold';}
  if(move==='check'){if(l.call>0)fail('Call or fold to answer the bet.');p.lastAction='Check';}
  if(move==='call'){if(!l.call)fail('There is no bet to call.');const paid=pay(p,l.call);p.lastAction=p.allIn?`All in · ${p.bet}`:`Call ${paid}`;}
@@ -179,6 +190,8 @@ function bet(r:Room,p:Player,move:'fold'|'check'|'call'|'raise',amount:number|un
   const increase=amount!-r.currentBet;if(amount!>=l.minRaiseTo)r.minRaise=r.currentBet<r.settings.bigBlind?Math.max(r.settings.bigBlind,increase):increase;
   pay(p,amount!-p.bet);r.currentBet=amount!;p.lastAction=p.allIn?`All in · ${p.bet}`:`Raise to ${p.bet}`;
  }
+ if(move==='fold'||move==='check')tableEvent(r,{type:move,playerId:p.id},now);
+ if(p.contributed>contributedBefore)tableEvent(r,{type:'bet',playerId:p.id,amount:p.contributed-contributedBefore},now);
  p.actedBet=r.currentBet;r.actionNo++;log(r,`${p.name}: ${p.lastAction}.`);advance(r,p.seat,now);
 }
 function discard(r:Room,p:Player,card:string,now:number){
@@ -197,7 +210,7 @@ function approveVote(r:Room){
  }else if(v.kind==='bounty'){
   if(r.bounty)fail('A bounty round is already running.');
   const liability=v.amount*(ps.length-1);if(ps.some(p=>p.stack<liability))fail(`Everyone needs at least ${liability} chips to cover this bounty.`);
-  r.bounty={amount:v.amount,players:ps.map(p=>p.id),won:[]};log(r,`Bounty round started: the last player without a win will pay ${v.amount} to each opponent.`);
+  r.bountyOutcome=null;r.bounty={amount:v.amount,players:ps.map(p=>p.id),won:[]};log(r,`Bounty round started: the last player without a win will pay ${v.amount} to each opponent.`);
  }else if(v.kind==='sevenDeuce'){
   if(r.sevenDeuce)fail('A 7-2 game is already running.');
   r.sevenDeuce={amount:v.amount};log(r,`7-2 game started for the session: direct payments happen after every qualifying hand.`);
