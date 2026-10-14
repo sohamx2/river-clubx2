@@ -1,6 +1,7 @@
 'use client';
 import { useCallback,useEffect,useRef,useState } from 'react';
 import type { HeadPose,PeerMessage,PresenceSnapshot,PresenceWrite } from '@/lib/presence-types';
+import {faceChanged} from '@/lib/face-pose';
 
 export function useTablePresence(code:string) {
   const [sessionId]=useState(()=>crypto.randomUUID());
@@ -21,12 +22,12 @@ export function useTablePresence(code:string) {
     accept(data);return data as PresenceSnapshot;
   },[code,accept]);
   useEffect(()=>{
-    alive.current=true;requests.current=new AbortController();let stopped=false,inFlight=false,lastWrite=0,lastPose={yaw:2,pitch:2};
+    alive.current=true;requests.current=new AbortController();let stopped=false,inFlight=false,lastWrite=0,lastPose:HeadPose={yaw:2,pitch:2};
     let timer:ReturnType<typeof setTimeout>;
     const poll=async()=>{
       if(stopped||inFlight)return;inFlight=true;
       try {
-        const changed=Math.abs(pose.current.yaw-lastPose.yaw)+Math.abs(pose.current.pitch-lastPose.pitch)>.04;
+        const changed=Math.abs(pose.current.yaw-lastPose.yaw)+Math.abs(pose.current.pitch-lastPose.pitch)>.04||faceChanged(pose.current.face,lastPose.face);
         if(Date.now()-lastWrite>10000||fallback.current&&changed) {
           const sent={...pose.current};await request({type:'pose',sessionId,...sent});lastPose=sent;lastWrite=Date.now();
         } else await request();
@@ -50,7 +51,7 @@ export function useTablePresence(code:string) {
     return request({type:'camera',sessionId,cameraSession});
   },[request,sessionId]);
   const stopCamera=useCallback(()=>{
-    void fetch('/api/presence',{method:'POST',headers:{'Content-Type':'application/json','x-river-client':'1'},body:JSON.stringify({code,write:{type:'camera',sessionId,cameraSession:null}}),keepalive:true}).catch(()=>{});
+    void fetch('/api/presence',{method:'POST',headers:{'Content-Type':'application/json','x-river-client':'1'},body:JSON.stringify({code,write:{type:'camera',sessionId,cameraSession:null,face:null}}),keepalive:true}).catch(()=>{});
   },[code,sessionId]);
   return {snapshot,sessionId,online,setPose,sendSignal,setCamera,stopCamera};
 }

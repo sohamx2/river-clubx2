@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { presence } from '../lib/presence-store';
+import {NEUTRAL_FACE} from '../lib/face-pose';
 
 test('presence preserves the active camera across stale tab writes and keeps signals private',async()=>{
   const folder=await mkdtemp(path.join(tmpdir(),'river-presence-test-'));
@@ -16,13 +17,15 @@ test('presence preserves the active camera across stale tab writes and keeps sig
     const oldSession=randomUUID(),activeSession=randomUUID(),cameraSession=randomUUID();
     await presence('ABC234',ids,first,{type:'pose',sessionId:oldSession,yaw:.1,pitch:.2});
     await presence('ABC234',ids,first,{type:'camera',sessionId:oldSession,cameraSession:randomUUID()});
-    await presence('ABC234',ids,first,{type:'pose',sessionId:activeSession,yaw:.6,pitch:-.4});
+    const face={...NEUTRAL_FACE,smileLeft:.4,blinkRight:.8};
+    await presence('ABC234',ids,first,{type:'pose',sessionId:activeSession,yaw:.6,pitch:-.4,face});
     await presence('ABC234',ids,first,{type:'camera',sessionId:activeSession,cameraSession});
-    for(const camera of [null,randomUUID()])await presence('ABC234',ids,first,{type:'camera',sessionId:oldSession,cameraSession:camera});
+    for(const camera of [null,randomUUID()])await presence('ABC234',ids,first,{type:'camera',sessionId:oldSession,cameraSession:camera,face:null});
     const reloaded=(await presence('ABC234',ids,second)).players.find(p=>p.id===first);
     assert.equal(reloaded?.sessionId,activeSession);
     assert.equal(reloaded?.cameraSession,cameraSession);
     assert.equal(reloaded?.yaw,.6);
+    assert.deepEqual(reloaded?.face,face);
 
     await presence('ABC234',ids,first,{type:'pose',sessionId:activeSession,yaw:-.3,pitch:.1});
     assert.equal((await presence('ABC234',ids,first)).players.find(p=>p.id===first)?.cameraSession,cameraSession);
@@ -30,8 +33,10 @@ test('presence preserves the active camera across stale tab writes and keeps sig
     await presence('ABC234',ids,first,signal);await presence('ABC234',ids,first,signal);
     assert.equal((await presence('ABC234',ids,second)).signals.length,1);
     assert.equal((await presence('ABC234',ids,first)).signals.length,0);
-    await presence('ABC234',ids,first,{type:'camera',sessionId:activeSession,cameraSession:null});
-    assert.equal((await presence('ABC234',ids,second)).players.find(p=>p.id===first)?.cameraSession,null);
+    await presence('ABC234',ids,first,{type:'pose',sessionId:activeSession,yaw:0,pitch:0,face});
+    await presence('ABC234',ids,first,{type:'camera',sessionId:activeSession,cameraSession:null,face:null});
+    const stopped=(await presence('ABC234',ids,second)).players.find(p=>p.id===first);
+    assert.equal(stopped?.cameraSession,null);assert.equal(stopped?.face,null);
   } finally {
     process.chdir(cwd);
     if(databaseUrl===undefined)delete process.env.DATABASE_URL;else process.env.DATABASE_URL=databaseUrl;

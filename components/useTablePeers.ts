@@ -1,8 +1,9 @@
 'use client';
 import { useCallback,useEffect,useRef,useState } from 'react';
 import type { HeadPose,PeerMessage,PresenceSnapshot } from '@/lib/presence-types';
+import {parseAvatarPose} from '@/lib/avatar-pose';
 
-type Peer={pc:RTCPeerConnection;callId:string;channel:RTCDataChannel|null;candidates:RTCIceCandidateInit[];outgoing:RTCIceCandidateInit[];timer?:ReturnType<typeof setTimeout>;reconnectTimer?:ReturnType<typeof setTimeout>;work:Promise<void>;retries:number};
+type Peer={pc:RTCPeerConnection;callId:string;channel:RTCDataChannel|null;candidates:RTCIceCandidateInit[];outgoing:RTCIceCandidateInit[];timer?:ReturnType<typeof setTimeout>;reconnectTimer?:ReturnType<typeof setTimeout>;work:Promise<void>;retries:number;lastSequence:number};
 const defaultIce:RTCIceServer[]=[{urls:'stun:stun.l.google.com:19302'},{urls:'stun:stun1.l.google.com:19302'}];
 function iceServers():RTCIceServer[] {
   // Optional TURN configuration for networks that block direct peer connections.
@@ -10,7 +11,7 @@ function iceServers():RTCIceServer[] {
   return defaultIce;
 }
 export function useTablePeers({me,playerIds,sessionId,snapshot,localStream,cameraSession,sendSignal}:{me:string;playerIds:string[];sessionId:string;snapshot:PresenceSnapshot;localStream:MediaStream|null;cameraSession:string|null;sendSignal:(to:string,data:PeerMessage)=>Promise<void>}) {
-  const peers=useRef(new Map<string,Peer>()),processed=useRef(new Set<string>()),latestPose=useRef<HeadPose>({yaw:0,pitch:0});
+  const peers=useRef(new Map<string,Peer>()),processed=useRef(new Set<string>()),latestPose=useRef<HeadPose>({yaw:0,pitch:0}),sequence=useRef(0);
   const [streams,setStreams]=useState<Record<string,MediaStream>>({}),[poses,setPoses]=useState<Record<string,HeadPose>>({});
   const [connected,setConnected]=useState(0),[failed,setFailed]=useState(false);
   const roster=playerIds.filter(id=>id!==me).map(id=>{
@@ -32,11 +33,14 @@ export function useTablePeers({me,playerIds,sessionId,snapshot,localStream,camer
     };
     function bindChannel(id:string,peer:Peer,channel:RTCDataChannel) {
       peer.channel=channel;
-      channel.onopen=()=>{if(peers.current.get(id)!==peer||peer.channel!==channel)return;refresh();try{channel.send(JSON.stringify(latestPose.current));}catch{}};
+      channel.onopen=()=>{if(peers.current.get(id)!==peer||peer.channel!==channel)return;refresh();try{channel.send(JSON.stringify({...latestPose.current,sequence:++sequence.current}));}catch{}};
       channel.onclose=()=>{if(peers.current.get(id)===peer&&peer.channel===channel)refresh();};
       channel.onmessage=e=>{
-        if(peers.current.get(id)!==peer||peer.channel!==channel||typeof e.data!=='string'||e.data.length>128)return;
-        try{const value=JSON.parse(e.data);if(Number.isFinite(value.yaw)&&Number.isFinite(value.pitch)&&Math.abs(value.yaw)<=1&&Math.abs(value.pitch)<=1)setPoses(prev=>({...prev,[id]:{yaw:value.yaw,pitch:value.pitch}}));}catch{}
+        if(peers.current.get(id)!==peer||peer.channel!==channel||typeof e.data!=='string'||e.data.length>768)return;
+        try{const raw=JSON.parse(e.data),value=parseAvatarPose(raw);if(!value)return;
+          if(raw.sequence!==undefined){if(!Number.isSafeInteger(raw.sequence)||raw.sequence<=peer.lastSequence)return;peer.lastSequence=raw.sequence;}
+          else if(peer.lastSequence>=0)return;
+          setPoses(prev=>({...prev,[id]:value}));}catch{}
       };
     }
     for(const id of peers.current.keys())if(!members.some(p=>p.id===id))closePeer(id);
@@ -46,7 +50,7 @@ export function useTablePeers({me,playerIds,sessionId,snapshot,localStream,camer
       closePeer(remote.id);
       let pc:RTCPeerConnection;
       try{pc=new RTCPeerConnection({iceServers:iceServers()});}catch{setFailed(true);continue;}
-      const peer:Peer={pc,callId,channel:null,candidates:[],outgoing:[],work:Promise.resolve(),retries:0};
+      const peer:Peer={pc,callId,channel:null,candidates:[],outgoing:[],work:Promise.resolve(),retries:0,lastSequence:-1};
       peers.current.set(remote.id,peer);
       const video=localStream?.getVideoTracks().find(track=>track.readyState==='live');
       if(video&&localStream)pc.addTrack(video,localStream);else pc.addTransceiver('video',{direction:'recvonly'});
@@ -119,8 +123,10 @@ export function useTablePeers({me,playerIds,sessionId,snapshot,localStream,camer
   useEffect(()=>()=>{const previous=[...peers.current.values()];peers.current.clear();for(const peer of previous){clearTimeout(peer.timer);clearTimeout(peer.reconnectTimer);peer.pc.close();}},[]);
   const broadcast=useCallback((pose:HeadPose)=>{
     latestPose.current=pose;
-    for(const peer of peers.current.values())if(peer.channel?.readyState==='open'&&peer.channel.bufferedAmount<1024)try{peer.channel.send(JSON.stringify(pose));}catch{}
+    const packet=JSON.stringify({...pose,sequence:++sequence.current});
+    for(const peer of peers.current.values())if(peer.channel?.readyState==='open'&&peer.channel.bufferedAmount<1024)try{peer.channel.send(packet);}catch{}
   },[]);
+  useEffect(()=>{const heartbeat=setInterval(()=>broadcast(latestPose.current),1000);return()=>clearInterval(heartbeat);},[broadcast]);
   const livePoses=Object.fromEntries(Object.entries(poses).filter(([id])=>peers.current.get(id)?.channel?.readyState==='open'));
   return {streams,poses:livePoses,broadcast,connected,failed,needsFallback:connected<playerIds.length-1};
 }

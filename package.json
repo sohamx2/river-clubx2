@@ -12,6 +12,7 @@
     "test:api": "node --import tsx tests/api-smoke.ts"
   },
   "dependencies": {
+    "@mediapipe/tasks-vision": "1.1.0",
     "@neondatabase/serverless": "1.1.0",
     "lucide-react": "1.44.0",
     "motion": "13.2.0",

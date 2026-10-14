@@ -6,6 +6,8 @@ import { characterExpression, EXPRESSION_LABELS, type CharacterExpression } from
 import type { HeadPose } from '@/lib/presence-types';
 import type { PublicPlayer, RoomView, Theme } from '@/lib/types';
 import { chipBreakdown, CHIP_VALUES, DIE_ROLL_MS, OCEAN_WAVE_MS } from '@/lib/table-scene';
+import {drawTrackedFace} from '@/lib/draw-tracked-face';
+import {FACE_FIELDS,type FacePose} from '@/lib/face-pose';
 
 interface SceneProps {
   room: RoomView;
@@ -150,6 +152,7 @@ export function ThreePokerScene(props: SceneProps) {
     const accent = standard(palette.accent, { metalness: .35, roughness: .42 });
     const cardMaterials = new Map<string, THREE.MeshBasicMaterial>();
     const faceTextures = new Map<CharacterExpression, THREE.CanvasTexture>();
+    const trackedFaces=new Map<string,{texture:THREE.CanvasTexture;key:string}>();
 
     function segment(parent: THREE.Object3D, from: THREE.Vector3, to: THREE.Vector3, radius: number, paint: THREE.Material) {
       const object = mesh(limb, paint, parent);
@@ -314,6 +317,27 @@ export function ThreePokerScene(props: SceneProps) {
       });
       faceTextures.set(expression, value); return value;
     }
+    function trackedFaceTexture(id:string,face:FacePose){
+      const key=FACE_FIELDS.map(field=>face[field]).join(',');
+      let entry=trackedFaces.get(id);
+      if(!entry){entry={texture:drawTexture(256,256,ctx=>drawTrackedFace(ctx,face)),key};trackedFaces.set(id,entry);}
+      else if(entry.key!==key){const ctx=(entry.texture.image as HTMLCanvasElement).getContext('2d');if(ctx)drawTrackedFace(ctx,face);entry.texture.needsUpdate=true;entry.key=key;}
+      return entry.texture;
+    }
+    function playerPortrait(ctx:CanvasRenderingContext2D,room:RoomView,id:string,x:number,y:number,size:number){
+      const player=room.players.find(p=>p.id===id);if(!player)return;
+      const actor=actors.get(id),video=id===room.me?posterVideo:actor?.video;
+      const pose=id===room.me?live.current.pose:live.current.poses[id];
+      ctx.save();ctx.translate(x,y);ctx.scale(size/256,size/256);ctx.beginPath();ctx.arc(128,128,122,0,Math.PI*2);ctx.clip();
+      if(video&&video.readyState>=2){const side=Math.min(video.videoWidth,video.videoHeight);ctx.drawImage(video,(video.videoWidth-side)/2,(video.videoHeight-side)/2,side,side,0,0,256,256);}
+      else{
+        ctx.fillStyle='#c8b68b';ctx.fillRect(0,0,256,256);ctx.fillStyle=`hsl(${(player.seat*47+27)%360},35%,43%)`;
+        ctx.beginPath();ctx.ellipse(128,261,119,72,0,0,Math.PI*2);ctx.fill();ctx.fillStyle='#eac49c';ctx.beginPath();ctx.ellipse(128,121,89,103,0,0,Math.PI*2);ctx.fill();
+        const face=pose?.face?trackedFaceTexture(id,pose.face):faceTexture(characterExpression(player,room,live.current.now));
+        ctx.drawImage(face.image as HTMLCanvasElement,36,23,184,193);ctx.fillStyle='#292124';ctx.beginPath();ctx.ellipse(128,36,91,24,0,Math.PI,Math.PI*2);ctx.fill();
+      }
+      ctx.restore();
+    }
     function cardMaterial(card: string) {
       const key = card || '?'; const cached = cardMaterials.get(key); if (cached) return cached;
       const map = drawTexture(320, 464, ctx => {
@@ -431,6 +455,7 @@ export function ThreePokerScene(props: SceneProps) {
     }
     function removeActor(actor: Actor) {
       stopVideo(actor); retireTexture(actor.nameplate.material.map); retireTexture(actor.reaction.material.map);
+      const id=[...actors].find(([,candidate])=>candidate===actor)?.[0];if(id){retireTexture(trackedFaces.get(id)?.texture);trackedFaces.delete(id);}
       world.remove(actor.root, actor.nameplate, actor.reaction);
     }
     function attachVideo(actor: Actor, stream?: MediaStream) {
@@ -564,23 +589,34 @@ export function ThreePokerScene(props: SceneProps) {
     }
 
     let posterVideo:HTMLVideoElement|null=null,posterStream:MediaStream|null=null;
-    const posterFrame=new THREE.Group();posterFrame.position.set(1.6,3.1,-7.87);world.add(posterFrame);posterFrame.visible=false;
+    const posterFrame=new THREE.Group();posterFrame.position.set(1.6,2.8,-7.87);world.add(posterFrame);posterFrame.visible=false;
     block(posterFrame,wood,[0,0,-.04],[2.75,3.2,.09]);
     const posterPaint=material(new THREE.MeshBasicMaterial({color:'#ffffff',toneMapped:false}));
     mesh(geometry(new THREE.PlaneGeometry(2.55,3.0)),posterPaint,posterFrame,[0,0,.015]);
-    function updateBountyPoster(room:RoomView){
+    let lastPosterUpdate=0;
+    function updateBountyPoster(room:RoomView,time:number){
       const queued=room.vote?.kind==='bounty'?room.vote:null,bounty=room.bounty,outcome=room.bountyOutcome;
-      posterFrame.visible=!!(queued||bounty||outcome);if(!posterFrame.visible)return;
-      const stream=!queued&&!bounty&&outcome?.loserId===room.me?live.current.localStream:null;
+      posterFrame.visible=!!(queued||bounty||outcome);
+      const stream=posterFrame.visible?live.current.localStream:null;
       if(stream!==posterStream){
         if(posterVideo){posterVideo.pause();posterVideo.srcObject=null;posterVideo.remove();posterVideo=null;}
         posterStream=stream;if(stream){posterVideo=document.createElement('video');posterVideo.muted=true;posterVideo.playsInline=true;posterVideo.srcObject=stream;void posterVideo.play().catch(()=>{});}
       }
+      if(!posterFrame.visible)return;
       const video=outcome?.loserId===room.me?posterVideo:actors.get(outcome?.loserId||'')?.video;
       const photoReady=!!video&&video.readyState>=2;
       const signature=queued?`vote/${queued.id}`:bounty?`active/${bounty.amount}/${bounty.players.join()}/${bounty.won.join()}`:`lost/${outcome?.loserId}/${outcome?.completedAt}/${photoReady}`;
-      if(signature===posterSignature)return;posterSignature=signature;
-      const next=drawTexture(640,900,ctx=>{
+      const faces=(bounty?.players||queued?.voters||(outcome?[outcome.loserId]:[])).map(id=>{
+        const player=room.players.find(p=>p.id===id),pose=id===room.me?live.current.pose:live.current.poses[id];
+        return pose?.face?FACE_FIELDS.map(field=>Math.round(pose.face![field]*5)).join(','):player?characterExpression(player,room,live.current.now):'';
+      }).join('|');
+      const hasCamera=!!posterVideo||[...actors.values()].some(actor=>!!actor.video);
+      const completeSignature=`${signature}/${faces}/${hasCamera?Math.floor(time/700):''}`;
+      if(completeSignature===posterSignature||time-lastPosterUpdate<500)return;
+      posterSignature=completeSignature;lastPosterUpdate=time;
+      if(!posterPaint.map){posterPaint.map=drawTexture(640,900,()=>{});posterPaint.needsUpdate=true;}
+      const next=posterPaint.map as THREE.CanvasTexture,ctx=(next.image as HTMLCanvasElement).getContext('2d');if(!ctx)return;
+      {
         ctx.fillStyle='#e8d5a8';ctx.fillRect(0,0,640,900);
         for(let i=0;i<250;i++){ctx.fillStyle=i%2?'#684a1b0b':'#fff7da20';ctx.fillRect((i*97)%640,(i*211)%900,3,3);}
         ctx.strokeStyle='#765132';ctx.lineWidth=8;ctx.strokeRect(20,20,600,860);ctx.fillStyle='#41291f';ctx.textAlign='center';ctx.font='900 88px Georgia';ctx.fillText('WANTED',320,117);
@@ -589,18 +625,19 @@ export function ThreePokerScene(props: SceneProps) {
           ctx.fillStyle=`hsl(${(outcome.loserSeat*47+27)%360},35%,43%)`;ctx.beginPath();ctx.moveTo(143,570);ctx.quadraticCurveTo(150,409,320,431);ctx.quadraticCurveTo(485,409,499,570);ctx.fill();
           ctx.fillStyle='#eac49c';ctx.beginPath();ctx.ellipse(320,350,125,155,0,0,Math.PI*2);ctx.fill();
           if(photoReady&&video){ctx.save();ctx.beginPath();ctx.ellipse(320,350,120,150,0,0,Math.PI*2);ctx.clip();ctx.drawImage(video,195,200,250,300);ctx.restore();}
-          else {ctx.fillStyle='#292124';ctx.beginPath();ctx.ellipse(320,213,126,34,0,Math.PI,Math.PI*2);ctx.fill();ctx.drawImage(faceTexture('fold').image as HTMLCanvasElement,205,230,230,245);}
+          else {ctx.fillStyle='#292124';ctx.beginPath();ctx.ellipse(320,213,126,34,0,Math.PI,Math.PI*2);ctx.fill();const face=(outcome.loserId===room.me?live.current.pose:live.current.poses[outcome.loserId])?.face;ctx.drawImage((face?trackedFaceTexture(outcome.loserId,face):faceTexture('fold')).image as HTMLCanvasElement,205,230,230,245);}
           ctx.font='800 49px Georgia';ctx.fillStyle='#41291f';ctx.fillText(outcome.loserName,320,655,530);
           ctx.font='600 30px Georgia';ctx.fillText('Last without a win',320,720);ctx.fillText(`${outcome.amount.toLocaleString()} chips to each friend`,320,770,530);
         }else{
           const ids=bounty?.players||queued!.voters,won=bounty?.won||[];
-          ids.forEach((id,index)=>{const y=240+index*49,name=room.players.find(p=>p.id===id)?.name||'Friend';ctx.font='700 35px Georgia';ctx.fillStyle=won.includes(id)?'#8e8069':'#41291f';ctx.fillText(name,320,y,500);
-            if(won.includes(id)){ctx.strokeStyle='#a43b33';ctx.lineWidth=6;ctx.beginPath();ctx.moveTo(100,y-17);ctx.lineTo(540,y-7);ctx.stroke();}
-          });
+          ids.forEach((id,index)=>{const y=240+index*53,name=room.players.find(p=>p.id===id)?.name||'Friend';
+            playerPortrait(ctx,room,id,87,y-34,44);ctx.textAlign='left';ctx.font='700 34px Georgia';ctx.fillStyle=won.includes(id)?'#8e8069':'#41291f';ctx.fillText(name,154,y,375);
+            if(won.includes(id)){ctx.strokeStyle='#a43b33';ctx.lineWidth=6;ctx.beginPath();ctx.moveTo(149,y-15);ctx.lineTo(540,y-7);ctx.stroke();}
+          });ctx.textAlign='center';
           ctx.fillStyle='#41291f';ctx.font='700 31px Georgia';ctx.fillText(`${(bounty?.amount||queued?.amount||0).toLocaleString()} CHIPS EACH`,320,820);ctx.font='25px Georgia';ctx.fillText('Win a hand. Cross your name off.',320,860);
         }
-      });
-      retireTexture(posterPaint.map);posterPaint.map=next;posterPaint.needsUpdate=true;
+      }
+      next.needsUpdate=true;
     }
 
     function processEvents(room:RoomView,time:number){
@@ -653,8 +690,8 @@ export function ThreePokerScene(props: SceneProps) {
       narrow = width < 700;
       renderer.setSize(width, height, false); camera.aspect = width / height;
       // The same physical room stays visible in portrait; the spectator sits slightly back.
-      camera.fov = narrow ? 86 : 67;
-      camera.position.set(0,narrow?3.15:2.72,narrow?5.4:4.15);
+      camera.fov = narrow ? 88 : 69;
+      camera.position.set(0,narrow?3.15:2.72,narrow?(live.current.room.settings.maxPlayers>6?5.1:4.75):3.55);
       table.scale.x = narrow ? .7 : 1;
       camera.updateProjectionMatrix(); renderer.shadowMap.enabled = !narrow;
       layoutSignature = '';
@@ -727,7 +764,7 @@ export function ThreePokerScene(props: SceneProps) {
           const cards=own?.hole||[];
           cards.forEach((card,i)=>{
             const offset=i-(cards.length-1)/2,spacing=cards.length>3?.33:.47;
-            const target=new THREE.Vector3(-.62+offset*spacing,FELT_Y+.013+i*.001,1.42+Math.abs(offset)*.018);
+            const target=new THREE.Vector3(-.62+offset*spacing,FELT_Y+.013+i*.001,1.3+Math.abs(offset)*.018);
             const delay=newHand?cardDealDelay(room,room.me,i):undefined;
             const object=makeCard(card,heldCards,target,new THREE.Euler(-Math.PI/2,0,offset*-.05),delay||0,delay!==undefined?dealerOrigin(room):undefined);
             object.scale.setScalar(cards.length>3?1.3:1.5);
@@ -748,14 +785,14 @@ export function ThreePokerScene(props: SceneProps) {
         // leftward camera turn appear as a rightward head turn to other seats.
         actor.head.rotation.y += (remotePose.yaw * .62 - actor.head.rotation.y) * .16;
         actor.head.rotation.x += (remotePose.pitch * .3 - actor.head.rotation.x) * .16;
-        const tilt = expression === 'thinking' ? -.12 : expression === 'fold' ? .11 : 0;
+        const tilt = remotePose.face?0:expression === 'thinking' ? -.12 : expression === 'fold' ? .11 : 0;
         actor.head.rotation.z += (tilt - actor.head.rotation.z) * .09;
         const armAngle = expression === 'winner' || expression === 'fire' ? -.8 : expression === 'thinking' ? -.25 : 0;
         animateArms(actor,player.id,time,armAngle);
         attachVideo(actor, live.current.streams[player.id]);
         const useVideo = actor.videoTexture && actor.video && actor.video.readyState >= 2;
         if (useVideo) cameraFaces++;
-        const face = useVideo ? actor.videoTexture! : faceTexture(expression);
+        const face = useVideo ? actor.videoTexture! : remotePose.face?trackedFaceTexture(player.id,remotePose.face):faceTexture(expression);
         if (actor.face.material.map !== face) { actor.face.material.map = face; actor.face.material.needsUpdate = true; }
         const action = room.turnId === player.id ? 'Thinking…' : room.phase === 'showdown' && room.result?.winners.includes(player.id) ? 'WINNER' : player.sittingOut ? 'Sitting out' : player.lastAction || 'Ready';
         const title = `${player.name}${player.seat === room.dealerSeat ? ' · D' : ''}`;
@@ -794,20 +831,20 @@ export function ThreePokerScene(props: SceneProps) {
       const dt=previousFrame?Math.min(100,time-previousFrame):22;previousFrame=time;
       const blendTarget=live.current.topDown?1:0;
       topDownBlend=reducedMotion?blendTarget:THREE.MathUtils.damp(topDownBlend,blendTarget,4.5,dt/1000);
-      const seatedY=narrow?3.15:2.72,seatedZ=narrow?5.4:4.15;
+      const seatedY=narrow?3.15:2.72,seatedZ=narrow?(room.settings.maxPlayers>6?5.1:4.75):3.55;
       seatedPosition.set(0,seatedY,seatedZ);
       // Stand at the near rail and lean forward, keeping the room's vertical upright.
       overheadPosition.set(0,narrow?3.9:3.5,narrow?2.65:2.35);
       camera.position.lerpVectors(seatedPosition,overheadPosition,topDownBlend);camera.up.copy(worldUp);
       const yaw=currentYaw*(narrow?.44:.52)*(1-topDownBlend);
-      const baselinePitch=Math.atan2(FELT_Y-seatedY,seatedZ-.85);
+      const baselinePitch=Math.atan2(FELT_Y-seatedY,seatedZ-.5);
       const lookPitch=baselinePitch-currentPitch*.14*(1-topDownBlend);
       seatedTarget.set(Math.sin(yaw)*10,seatedY+Math.tan(lookPitch)*10,seatedZ-10*Math.cos(yaw));
       overheadTarget.set(0,FELT_Y,1.3);viewTarget.lerpVectors(seatedTarget,overheadTarget,topDownBlend);
       camera.lookAt(viewTarget);
-      const fov=(narrow?86:67)+6*topDownBlend;if(Math.abs(camera.fov-fov)>.02){camera.fov=fov;camera.updateProjectionMatrix();}
+      const fov=(narrow?88:69)+6*topDownBlend;if(Math.abs(camera.fov-fov)>.02){camera.fov=fov;camera.updateProjectionMatrix();}
       updateLayout(room);processEvents(room,time);updateCards(room,time);updateActors(room,now,time);
-      updateChipStacks(room);updateSideEffects(room,time);updateBountyPoster(room);animateMotions(time);
+      updateChipStacks(room);updateSideEffects(room,time);updateBountyPoster(room,time);animateMotions(time);
       animateArms(ownArms,room.me,time);
       renderer.render(scene, camera);
       animationFrame = requestAnimationFrame(animate);
@@ -829,6 +866,6 @@ export function ThreePokerScene(props: SceneProps) {
   }, [props.room.code, props.room.settings.theme]);
 
   return <div ref={host} className="three-poker-canvas" data-camera-faces="0" role="img" aria-label="First-person 3D poker table with seated human characters. Move your pointer to look around.">
-    <span className="sr-only">{props.room.players.filter(player => player.id !== props.room.me).map(player => `${player.name}: ${EXPRESSION_LABELS[characterExpression(player, props.room, props.now)]}, ${player.lastAction || 'ready'}, ${player.stack.toLocaleString()} chips.`).join(' ')}</span>
+    <span className="sr-only">{props.room.players.filter(player => player.id !== props.room.me).map(player => `${player.name}: ${props.poses[player.id]?.face?'mirroring facial movements':EXPRESSION_LABELS[characterExpression(player, props.room, props.now)]}, ${player.lastAction || 'ready'}, ${player.stack.toLocaleString()} chips.`).join(' ')}</span>
   </div>;
 }

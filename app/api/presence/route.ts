@@ -4,14 +4,16 @@ import { z } from 'zod';
 import { authenticate,GameError } from '@/lib/engine';
 import { updateRoom,rateLimit } from '@/lib/store';
 import { presence } from '@/lib/presence-store';
+import {FACE_FIELDS} from '@/lib/face-pose';
 
 export const runtime='nodejs';
 export const dynamic='force-dynamic';
 const description=z.object({type:z.enum(['offer','answer']),sdp:z.string().min(1).max(16000)});
 const candidate=z.object({candidate:z.string().max(2000).optional(),sdpMid:z.string().max(80).nullable().optional(),sdpMLineIndex:z.number().int().min(0).max(20).nullable().optional(),usernameFragment:z.string().max(256).nullable().optional()});
+const faceSchema=z.object(Object.fromEntries(FACE_FIELDS.map(key=>[key,z.number().min(0).max(1)])) as Record<typeof FACE_FIELDS[number],z.ZodNumber>);
 const writeSchema=z.discriminatedUnion('type',[
-  z.object({type:z.literal('pose'),sessionId:z.uuid(),yaw:z.number().min(-1).max(1),pitch:z.number().min(-1).max(1)}),
-  z.object({type:z.literal('camera'),sessionId:z.uuid(),cameraSession:z.uuid().nullable()}),
+  z.object({type:z.literal('pose'),sessionId:z.uuid(),yaw:z.number().min(-1).max(1),pitch:z.number().min(-1).max(1),face:faceSchema.nullable().optional()}),
+  z.object({type:z.literal('camera'),sessionId:z.uuid(),cameraSession:z.uuid().nullable(),face:z.null().optional()}),
   z.object({type:z.literal('signal'),id:z.uuid(),to:z.uuid(),data:z.object({callId:z.string().min(1).max(240),description:description.optional(),candidates:z.array(candidate).max(30).optional()}).refine(d=>!!d.description||!!d.candidates?.length)}),
 ]);
 const bodySchema=z.object({code:z.string().regex(/^[A-Z2-9]{6}$/),write:writeSchema});

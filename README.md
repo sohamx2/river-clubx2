@@ -13,7 +13,7 @@ A private, play-money Texas Hold’em website for 2–10 friends, ready for Verc
 - Player Stack shows every player’s current stack and cumulative net chips from completed hands and side bets. Rebuys do not reset net results. Rooms from older versions begin tracking with this update because full historical transactions were not stored.
 - Six shared emoji reactions appear temporarily over the reacting player’s seat, with a short cooldown. Reactions do not affect turns, action counters, or chips.
 - A full Three.js first-person bar environment with original 3D human stick figures, expressive faces for turns/actions/reactions, 3D hands and flat hole cards at your seat, and mouse/trackpad-controlled head movement shared with other players. Flat cards on the felt, coloured chip towers, dealer throws, fold tosses, and table-knock checks. A per-browser stand-up toggle beside sit-out smoothly raises the viewpoint and leans over the cards.
-- Optional live camera faces with an explicit enable button and browser permission prompt. Only video is requested; sharing stops when turned off, leaving, or switching out of first-person mode.
+- Optional on-device webcam expression tracking maps smiles, blinks, brows, and mouth movement onto your character. Live camera faces remain a separate choice. Both require an explicit enable button and browser permission; the microphone is never requested.
 - A full-width 3D table with native betting controls over the near rail and game panels below. Table view preserves the compact desktop rail and mobile dock. All chips are fictional; there are no payments or deposits.
 
 ## Run locally
@@ -54,7 +54,11 @@ First-person mode is the default. Three.js renders the entire bar, table, chairs
 
 The dealer throws cards to each occupied seat, folds slide face-down to a separate muck pile, and checks tap the felt. Die on the River tumbles a physical die and shows its authoritative face before replacing the board card; Ocean washes in the sixth card with a wave. The showdown overlay waits for these effects to finish. A wanted poster appears for proposed or active bounties, crosses out players who have won, and displays the losing character (or already-shared camera portrait) when the bounty ends. The completed bounty outcome remains available after reconnecting. A bounded public cue history contains player IDs, actions, chip amounts, and die outcomes, with no private card values. Reduced-motion settings skip movement. Large chip stacks are visually compressed; numeric stack and pot displays remain exact.
 
-Choose **Use camera face** to request browser camera permission and replace your stick character's face with live video. The feed is shared with the current table, with no microphone capture or video recording by the app. **Turn camera off** stops the camera tracks immediately. Declining permission leaves the stick face available. Camera access requires HTTPS (Vercel supplies it) or localhost during development.
+Choose **Mirror expressions** to request camera permission and animate your character's face from your facial movements. Video is processed on your device in a worker; only ten movement weights are shared with the table. Tracking overrides the automatic thinking/action faces, so a neutral poker face stays neutral. If your face leaves the frame, the character returns to neutral. **Stop expressions** ends capture and tracking. The MediaPipe runtime and model are hosted with the app and load only when enabled.
+
+Choose **Share camera face** to replace your character's face with live video shared with the current table. This is separate from expression tracking. **Turn camera off** stops the camera tracks immediately. Neither mode records video or captures audio. Declining permission leaves the stick face available. Capture stops when leaving or switching out of first-person mode. Camera access requires HTTPS (Vercel supplies it) or localhost during development.
+
+The seated view is closer to the felt for a home-game feel. Bounty posters include a small portrait beside each player's name, with tracked expressions or explicitly shared camera portraits when enabled.
 
 Head motion uses WebRTC data channels with a throttled server fallback. Camera frames travel peer to peer; the server stores only poses, short-lived session information, and recipient-private connection signals in separate tables. These requests never advance a turn or update poker state. Presence adds low-frequency polling and occasional writes to the existing free-plan usage, while connected peers exchange movement directly.
 
@@ -121,9 +125,11 @@ npm run test:api -- http://127.0.0.1:3001
 node --import tsx tests/presence-smoke.ts http://127.0.0.1:3001
 ```
 
-Character tests cover public-action and emoji expression priorities, while the presence regression protects camera sessions during reloads. The presence smoke test verifies shared poses, camera state, recipient-private/idempotent signals, validation, authentication, CSRF, and unchanged poker state.
+Character tests cover public-action and emoji expression priorities. Facial-tracking tests cover movement mapping, anatomical left/right orientation, neutral transitions, and validation of peer data. Presence regressions protect newer camera sessions from stale cleanup and clear facial movement on stop. The presence smoke test verifies shared poses, camera state, recipient-private/idempotent signals, validation, authentication, CSRF, and unchanged poker state.
 
 Desktop and portrait browser checks cover the 3D scene, card fans, controls, and camera permission denial. Synthetic peer video reached the remote 3D face, but the test browser crashed on the capture side; real-camera interoperability and restrictive-network relay behavior still require device testing.
+
+The real MediaPipe worker was verified in the browser using synthetic video: it detected facial movements, returned neutral when no face was visible, and stopped cleanly. Actual webcam permission and tracking quality still depend on the player's browser, camera, and lighting.
 
 The engine suite covers hand rankings, Ocean evaluation and dealing, heads-up rules, short all-ins, cumulative reopening, side pots, split pots, privacy, timeouts, 10 players, votes, bounty and 7-2 settlement, reconnects, and chip conservation through 500 randomized hands. The API smoke test creates 10 separate sessions, exercises concurrent joins and votes, checks duplicate-action protection and card isolation, plays combined side games, verifies net results across rebuys, broadcasts a reaction, queues sit-out and sit-in changes, and verifies CSRF checks.
 
