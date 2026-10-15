@@ -17,6 +17,8 @@ interface SceneProps {
   streams: Record<string, MediaStream>;
   localStream: MediaStream | null;
   topDown: boolean;
+  onBookOpen?: () => void;
+  bookOpen?: boolean;
   onReady?: (ready: boolean) => void;
 }
 
@@ -113,6 +115,9 @@ export function ThreePokerScene(props: SceneProps) {
     let currentPitch = 0;
     let topDownBlend = 0;
     let previousFrame = 0;
+    let bookBlend = 0;
+    let loungeBlend = 0;
+    let bookHovered = false;
     let eventHand = -1;
     let eventsInitialized = false;
     let dealerCue: {handNo:number;start:number;players:string[];rounds:number;dealerId:string}|null = null;
@@ -228,6 +233,61 @@ export function ThreePokerScene(props: SceneProps) {
       block(table, rail, [x, .45, 0], [.3, .9, 1.9]); block(table, wood, [x, .13, 0], [1, .22, 2.1]);
     }
 
+    // The table's controls live in a leather book, within reach of your seat.
+    const tableBook = new THREE.Group(); table.add(tableBook);
+    tableBook.rotation.y = -.18;
+    const leather = standard('#35231c', { roughness: .58 });
+    const bookGold = standard('#e7bf72', { metalness: .35, roughness: .42, emissive: '#9c6321', emissiveIntensity: .08 });
+    const paper = standard('#eddfbd', { roughness: .95 });
+    block(tableBook, leather, [0, .016, 0], [.73, .032, .97]);
+    block(tableBook, paper, [.01, .055, 0], [.68, .058, .9]);
+    for (let i = 0; i < 4; i++) block(tableBook, standard('#b8a784'), [.01, .036 + i * .011, .452], [.66, .003, .005]);
+    const spine = block(tableBook, leather, [-.36, .06, 0], [.045, .11, .97]);
+    spine.rotation.z = -.06;
+    const coverHinge = new THREE.Group(); coverHinge.position.set(-.355, .098, 0); tableBook.add(coverHinge);
+    block(coverHinge, leather, [.355, .005, 0], [.73, .026, .97]);
+    for (const z of [-.434, .434]) block(coverHinge, bookGold, [.355, .021, z], [.61, .004, .009]);
+    for (const x of [.052, .658]) block(coverHinge, bookGold, [x, .021, 0], [.009, .004, .87]);
+    const coverArt = drawTexture(512, 640, ctx => {
+      ctx.clearRect(0, 0, 512, 640); ctx.textAlign = 'center'; ctx.fillStyle = '#f0cd8c';
+      ctx.font = 'bold 49px Georgia'; ctx.fillText('THE TABLE', 256, 220); ctx.fillText('BOOK', 256, 285);
+      ctx.font = '100px Georgia'; ctx.fillText('♠', 256, 425);
+      ctx.font = '22px Georgia'; ctx.fillText('PLAY · VOTE · BELONG', 256, 525);
+    });
+    const coverWords = mesh(geometry(new THREE.PlaneGeometry(.6, .78)), material(new THREE.MeshBasicMaterial({map:coverArt,transparent:true,toneMapped:false})), coverHinge, [.355,.023,0]);
+    coverWords.rotation.x = -Math.PI/2;
+    const pageArt = drawTexture(512, 640, ctx => {
+      ctx.fillStyle='#ead9b3';ctx.fillRect(0,0,512,640);ctx.fillStyle='#493222';ctx.textAlign='center';
+      ctx.font='bold 44px Georgia';ctx.fillText('A GOOD HAND',256,105);ctx.font='29px Georgia';
+      ['Your next move','Side games & votes','Friends at the table','Table view & camera'].forEach((line,i)=>{ctx.fillText(line,256,205+i*83);ctx.fillStyle='#a8804c';ctx.fillRect(85,225+i*83,342,2);ctx.fillStyle='#493222';});
+    });
+    const page = mesh(geometry(new THREE.PlaneGeometry(.635,.855)), material(new THREE.MeshBasicMaterial({map:pageArt,toneMapped:false})), tableBook,[.01,.087,0]);page.rotation.x=-Math.PI/2;
+    // A little bookmark signals that the world object is interactive.
+    block(tableBook, standard('#9b3546'), [.19,.014,.53], [.09,.009,.21]);
+    const bookHitbox = mesh(geometry(new THREE.BoxGeometry(.92,.32,1.13)), material(new THREE.MeshBasicMaterial({visible:false})), tableBook,[0,.11,0]);
+    bookHitbox.castShadow=false;bookHitbox.receiveShadow=false;
+    const bookRay = new THREE.Raycaster(), pointer = new THREE.Vector2();
+    let bookPointerDown:{x:number;y:number;id:number}|null=null;
+    function hitsBook(event:globalThis.PointerEvent) {
+      if(!live.current.onBookOpen)return false;
+      const rect=renderer.domElement.getBoundingClientRect();
+      pointer.set((event.clientX-rect.left)/rect.width*2-1,-(event.clientY-rect.top)/rect.height*2+1);
+      bookRay.setFromCamera(pointer,camera);
+      return bookRay.intersectObject(bookHitbox,false).length>0;
+    }
+    const bookMove=(event:globalThis.PointerEvent)=>{bookHovered=hitsBook(event);renderer.domElement.style.cursor=bookHovered?'pointer':'';};
+    const bookDown=(event:globalThis.PointerEvent)=>{if(event.button===0&&hitsBook(event))bookPointerDown={x:event.clientX,y:event.clientY,id:event.pointerId};};
+    const bookUp=(event:globalThis.PointerEvent)=>{
+      const down=bookPointerDown;bookPointerDown=null;
+      if(down&&down.id===event.pointerId&&Math.hypot(event.clientX-down.x,event.clientY-down.y)<7&&hitsBook(event))live.current.onBookOpen?.();
+    };
+    const bookLeave=()=>{bookHovered=false;bookPointerDown=null;renderer.domElement.style.cursor='';};
+    renderer.domElement.addEventListener('pointermove',bookMove);
+    renderer.domElement.addEventListener('pointerdown',bookDown);
+    renderer.domElement.addEventListener('pointerup',bookUp);
+    renderer.domElement.addEventListener('pointercancel',bookLeave);
+    renderer.domElement.addEventListener('pointerleave',bookLeave);
+
     // A dimensional bar interior gives the viewer a stable seated frame of reference.
     const floor = standard('#2c211b');
     block(world, floor, [0, -.12, 0], [24, .2, 24]);
@@ -259,6 +319,21 @@ export function ThreePokerScene(props: SceneProps) {
     tableLight.position.set(0, 6.8, 1.4); tableLight.target.position.set(0, 1, -.8); tableLight.castShadow = true;
     tableLight.shadow.mapSize.set(512, 512); tableLight.shadow.bias = -.001; scene.add(tableLight, tableLight.target);
     const fill = new THREE.PointLight('#d8eaff', 19, 14, 1.7); fill.position.set(0, 3.8, 3.5); scene.add(fill);
+    const roseLight = new THREE.PointLight('#f04e87',0,12,1.6);roseLight.position.set(-4,3.1,-1.2);scene.add(roseLight);
+    const amberLight = new THREE.PointLight('#ffb454',0,11,1.8);amberLight.position.set(4.1,3.5,-4);scene.add(amberLight);
+    const loungeDecor = new THREE.Group();world.add(loungeDecor);loungeDecor.visible=false;
+    const velvet=standard('#5d1834',{roughness:1});
+    for(const side of [-1,1])for(let fold=0;fold<7;fold++){
+      const drape=mesh(limb,velvet,loungeDecor,[side*(4.9+fold*.16),3.55,-7.85]);drape.scale.set(.12,3.1,.15);
+    }
+    const loungeSign=drawTexture(768,180,ctx=>{ctx.clearRect(0,0,768,180);ctx.textAlign='center';ctx.fillStyle='#ffb6cf';ctx.font='italic 70px Georgia';ctx.fillText('The Velvet Hour',384,96);ctx.fillStyle='#ffd5ac';ctx.font='21px Georgia';ctx.fillText('A LITTLE MYSTERY. A LITTLE JAZZ.',384,142);});
+    const sign=mesh(geometry(new THREE.PlaneGeometry(4.5,1.05)),material(new THREE.MeshBasicMaterial({map:loungeSign,transparent:true,toneMapped:false})),loungeDecor,[0,4.35,-7.95]);
+    sign.castShadow=false;
+    const normalWall=new THREE.Color(palette.wall),roseWall=new THREE.Color('#321824');
+    const normalAmbient=new THREE.Color('#eef4ff'),roseAmbient=new THREE.Color('#ffd4d4');
+    const normalKey=new THREE.Color(palette.light),roseKey=new THREE.Color('#ffc48c');
+    const normalFill=new THREE.Color('#d8eaff'),roseFill=new THREE.Color('#f3a2c3');
+    const whiteFelt=new THREE.Color('#ffffff'),roseFelt=new THREE.Color('#f1d4e2');
     for (const x of [-5.8, 5.8]) {
       const lamp = mesh(geometry(new THREE.ConeGeometry(.62, .45, 24, 1, true)), rail, world, [x, 4.6, -4.2]); lamp.rotation.x = Math.PI;
       segment(world, new THREE.Vector3(x, 4.7, -4.2), new THREE.Vector3(x, 6.1, -4.2), .025, chairMetal);
@@ -514,14 +589,18 @@ export function ThreePokerScene(props: SceneProps) {
     const potChips=new THREE.Group();chipsOnTable.add(potChips);
     function potPoint(room:RoomView){
       const lines=[room.board,...(room.isDoubleBarrel?[room.boardTwo]:[])].reduce((sum,row)=>sum+Math.max(1,Math.ceil(row.length/(row.length>9?8:Math.max(5,row.length)))),0);
-      return new THREE.Vector3(lines>2?(narrow?1.85:2.5):(narrow?1.15:1.65),FELT_Y,lines>2?-.35:.98);
+      return new THREE.Vector3(narrow?1.85:lines>2?2.5:2.15,FELT_Y,-.85);
+    }
+    function playerStackPoint(room:RoomView,id:string,height=FELT_Y){
+      // Leave the near-right felt clear for the physical table companion.
+      return id===room.me?playerPoint(room,id,narrow?-1.6:-2.3,narrow?2.35:1.9,height):playerPoint(room,id,-.42,1.15,height);
     }
     function updateChipStacks(room:RoomView){
       const ids=new Set(room.players.map(p=>p.id));
       for(const [id,group] of stackGroups)if(!ids.has(id)){clear(group);group.removeFromParent();stackGroups.delete(id);}
       for(const player of room.players){
         let group=stackGroups.get(player.id);if(!group){group=new THREE.Group();chipsOnTable.add(group);stackGroups.set(player.id,group);}
-        group.position.copy(playerPoint(room,player.id,player.id===room.me?-1.25:-.42,player.id===room.me?1.1:1.15));
+        group.position.copy(playerStackPoint(room,player.id));
         group.rotation.y=placement(room,player.id).facing;group.scale.setScalar(narrow?.8:1);fillChipStack(group,player.stack);
       }
       potChips.position.copy(potPoint(room));
@@ -529,7 +608,7 @@ export function ThreePokerScene(props: SceneProps) {
     }
     function throwChips(room:RoomView,id:string,amount:number,time:number){
       if(reducedMotion)return;
-      const source=playerPoint(room,id,id===room.me?-1.25:-.42,1.12,FELT_Y+.25),chips=chipBreakdown(amount);
+      const source=playerStackPoint(room,id,FELT_Y+.25),chips=chipBreakdown(amount);
       let index=0;
       for(const chip of chips)for(let i=0;i<Math.min(chip.count,3)&&index<8;i++,index++){
         const object=mesh(chipGeometry,chipPaints.get(chip.value)!,flyingChips);
@@ -693,6 +772,8 @@ export function ThreePokerScene(props: SceneProps) {
       camera.fov = narrow ? 88 : 69;
       camera.position.set(0,narrow?3.15:2.72,narrow?(live.current.room.settings.maxPlayers>6?5.1:4.75):3.55);
       table.scale.x = narrow ? .7 : 1;
+      tableBook.position.set(narrow?1.22:1.5,FELT_Y+.012,narrow?1.28:1.22);
+      tableBook.scale.setScalar(narrow?1.08:1);
       camera.updateProjectionMatrix(); renderer.shadowMap.enabled = !narrow;
       layoutSignature = '';
       boardSignature = '';
@@ -829,6 +910,21 @@ export function ThreePokerScene(props: SceneProps) {
       const { room, now, pose } = live.current;
       currentYaw += (pose.yaw - currentYaw) * .12; currentPitch += (pose.pitch - currentPitch) * .12;
       const dt=previousFrame?Math.min(100,time-previousFrame):22;previousFrame=time;
+      const bookTarget=live.current.bookOpen?1:0;
+      bookBlend=reducedMotion?bookTarget:THREE.MathUtils.damp(bookBlend,bookTarget,6,dt/1000);
+      coverHinge.rotation.z=bookBlend*2.75;
+      bookGold.emissiveIntensity=THREE.MathUtils.damp(bookGold.emissiveIntensity,bookHovered?.75:.08,8,dt/1000);
+      const loungeTarget=room.isStripClub?1:0;
+      loungeBlend=reducedMotion?loungeTarget:THREE.MathUtils.damp(loungeBlend,loungeTarget,1.8,dt/1000);
+      (scene.background as THREE.Color).copy(normalWall).lerp(roseWall,loungeBlend);
+      (scene.fog as THREE.Fog).color.copy(scene.background as THREE.Color);
+      wall.color.copy(normalWall).lerp(roseWall,loungeBlend);
+      ambient.color.copy(normalAmbient).lerp(roseAmbient,loungeBlend);ambient.intensity=1.8-.28*loungeBlend;
+      tableLight.color.copy(normalKey).lerp(roseKey,loungeBlend);
+      fill.color.copy(normalFill).lerp(roseFill,loungeBlend);
+      felt.color.copy(whiteFelt).lerp(roseFelt,loungeBlend);
+      roseLight.intensity=33*loungeBlend;amberLight.intensity=27*loungeBlend;loungeDecor.visible=loungeBlend>.01;
+      const loungeTheme=room.isStripClub?'velvet':'standard';if(element!.dataset.loungeTheme!==loungeTheme)element!.dataset.loungeTheme=loungeTheme;
       const blendTarget=live.current.topDown?1:0;
       topDownBlend=reducedMotion?blendTarget:THREE.MathUtils.damp(topDownBlend,blendTarget,4.5,dt/1000);
       const seatedY=narrow?3.15:2.72,seatedZ=narrow?(room.settings.maxPlayers>6?5.1:4.75):3.55;
@@ -857,6 +953,11 @@ export function ThreePokerScene(props: SceneProps) {
     return () => {
       disposed = true; cancelAnimationFrame(animationFrame); resizeObserver.disconnect();
       renderer.domElement.removeEventListener('webglcontextlost', contextLost);
+      renderer.domElement.removeEventListener('pointermove',bookMove);
+      renderer.domElement.removeEventListener('pointerdown',bookDown);
+      renderer.domElement.removeEventListener('pointerup',bookUp);
+      renderer.domElement.removeEventListener('pointercancel',bookLeave);
+      renderer.domElement.removeEventListener('pointerleave',bookLeave);
       for (const actor of actors.values()) stopVideo(actor);
       if(posterVideo){posterVideo.pause();posterVideo.srcObject=null;posterVideo.remove();}
       for(const group of stackGroups.values())clear(group);clear(potChips);

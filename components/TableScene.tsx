@@ -1,7 +1,8 @@
 'use client';
 import dynamic from 'next/dynamic';
 import { useCallback,useEffect,useRef,useState,type CSSProperties,type PointerEvent,type ReactNode } from 'react';
-import { Camera,CameraOff,Focus,MousePointer2,Users } from 'lucide-react';
+import { BookOpen,Camera,CameraOff,Focus,MousePointer2,Users } from 'lucide-react';
+import { createPortal } from 'react-dom';
 import { PlayerSeat } from './PlayerSeat';
 import { CameraFace } from './CameraFace';
 import { TrackedFacePreview } from './TrackedFacePreview';
@@ -16,7 +17,7 @@ import type { RoomView } from '@/lib/types';
 const ThreePokerScene=dynamic(()=>import('./ThreePokerScene').then(module=>module.ThreePokerScene),{ssr:false,loading:()=> <div className="scene-loading" role="status">Taking your seat…</div>});
 type CameraMode='off'|'expressions'|'video';
 const clamp=(value:number)=>Math.max(-1,Math.min(1,value));
-export function TableScene({room,seconds,now,firstPerson,topDown,onInvite,children}:{room:RoomView;seconds:number;now:number;firstPerson:boolean;topDown:boolean;onInvite:()=>void;children:ReactNode}) {
+export function TableScene({room,seconds,now,firstPerson,topDown,onInvite,onBookOpen,bookOpen=false,controlsTarget,onFallback,children}:{room:RoomView;seconds:number;now:number;firstPerson:boolean;topDown:boolean;onInvite:()=>void;onBookOpen?:()=>void;bookOpen?:boolean;controlsTarget?:HTMLElement|null;onFallback?:()=>void;children:ReactNode}) {
   const {snapshot,sessionId,online,setPose,sendSignal,setCamera,stopCamera}=useTablePresence(room.code);
   const [pose,setLocalPose]=useState<HeadPose>({yaw:0,pitch:0}),[stream,setStream]=useState<MediaStream|null>(null),[cameraSession,setCameraSession]=useState<string|null>(null);
   const [cameraMode,setCameraMode]=useState<CameraMode>('off');
@@ -48,7 +49,7 @@ export function TableScene({room,seconds,now,firstPerson,topDown,onInvite,childr
   },[stopCamera,turnOff]);
   useEffect(()=>{if(!firstPerson){cameraAttempt.current++;setCameraBusy(false);if(streamRef.current)turnOff();const neutral={yaw:0,pitch:0};queuedPose.current=neutral;setLocalPose(neutral);peers.broadcast(neutral);}},[firstPerson,turnOff,peers.broadcast]);
   useEffect(()=>{setPose(pose,peers.needsFallback);},[pose,peers.needsFallback,setPose]);
-  const sceneReady=useCallback((ready:boolean)=>{setWebGLFailed(!ready);if(!ready)turnOff();},[turnOff]);
+  const sceneReady=useCallback((ready:boolean)=>{setWebGLFailed(!ready);if(!ready){turnOff();onFallback?.();}},[turnOff,onFallback]);
   async function toggleCamera(mode:'expressions'|'video') {
     if(stream&&cameraMode===mode){turnOff();return;}
     if(streamRef.current)turnOff();
@@ -70,7 +71,7 @@ export function TableScene({room,seconds,now,firstPerson,topDown,onInvite,childr
     finally{if(mounted.current&&attempt===cameraAttempt.current)setCameraBusy(false);}
   }
   function look(event:PointerEvent<HTMLDivElement>) {
-    if(!firstPerson||webGLFailed||(event.target as HTMLElement).closest('button,input,video'))return;
+    if(!firstPerson||webGLFailed||bookOpen||(event.target as HTMLElement).closest('button,input,video'))return;
     const rect=event.currentTarget.getBoundingClientRect();
     if(event.pointerType==='touch') {
       if(!touch.current)return;
@@ -84,20 +85,21 @@ export function TableScene({room,seconds,now,firstPerson,topDown,onInvite,childr
   const poses:Record<string,HeadPose>={},streams:Record<string,MediaStream>={};
   for(const player of room.players){const present=snapshot.players.find(p=>p.id===player.id);poses[player.id]=player.id===room.me?pose:peers.poses[player.id]||present||{yaw:0,pitch:0};if(player.id!==room.me&&present?.cameraSession&&peers.streams[player.id])streams[player.id]=peers.streams[player.id];}
   const render3D=firstPerson&&!webGLFailed;
+  const cameraTools=<div className={`first-person-tools ${controlsTarget?'book-controls-embedded':''}`}><div className="pov-control-row">
+      <button className={`camera-toggle ${cameraMode==='expressions'?'camera-live':''}`} onClick={()=>toggleCamera('expressions')} disabled={cameraBusy||webGLFailed} aria-pressed={cameraMode==='expressions'}><Camera size={15}/>{cameraMode==='expressions'?'Stop expressions':'Mirror expressions'}</button>
+      <button className={`camera-toggle ${cameraMode==='video'?'camera-live':''}`} onClick={()=>toggleCamera('video')} disabled={cameraBusy||webGLFailed} aria-pressed={cameraMode==='video'}>{cameraMode==='video'?<CameraOff size={15}/>:<Camera size={15}/>} {cameraMode==='video'?'Turn camera off':'Share camera face'}</button>
+      <button className="center-view" onClick={center} aria-label="Center first-person view" title="Center view"><Focus size={16}/></button><span className="look-hint"><MousePointer2 size={12}/> Move to look · drag on touch</span>
+      {stream&&<div className="local-face-preview">{cameraMode==='video'?<CameraFace stream={stream} name="Your" local/>:<TrackedFacePreview face={pose.face||NEUTRAL_FACE}/>}</div>}
+    </div><p className="camera-sharing-note" role="status">{cameraBusy?'Waiting for camera permission…':webGLFailed?'3D graphics are unavailable in this browser. Table view is still playable.':cameraMode==='expressions'?tracking==='loading'?'Starting expression tracking…':tracking==='no-face'?'Looking for your face · camera stays private':`Mirroring facial movements · video stays on your device${peers.needsFallback?' · table updates while peers reconnect':''}`:cameraMode==='video'?'Camera shared with this table · microphone off':!online?'Head movement is reconnecting. You can still play.':'Mirror expressions keeps video private · Share camera face sends video to the table · microphone off'}</p>{cameraError&&<p className="camera-error" role="alert">{cameraError}</p>}</div>;
   return <div className="table-visuals" onPointerMove={look} onPointerDown={e=>{if(e.pointerType==='touch')touch.current={x:e.clientX,y:e.clientY,pose};}} onPointerUp={()=>{touch.current=null;}} onPointerCancel={()=>{touch.current=null;}} data-head-connections={peers.connected} data-presence-online={online}>
-    {render3D?<><ThreePokerScene room={room} now={now} pose={pose} poses={poses} streams={streams} localStream={cameraMode==='video'?stream:null} topDown={topDown} onReady={sceneReady}/><div className="sr-only" aria-label="Table state"><p>Pot: {room.pot.toLocaleString()} chips. Board: {room.board.join(', ')||'Not dealt'}.{room.isDoubleBarrel&&` Second board: ${room.boardTwo.join(', ')||'Not dealt'}.`}</p>{room.players.map(player=><p key={player.id}>{player.name}{player.id===room.me?' (you)':''}: {player.stack.toLocaleString()} chips. {room.turnId===player.id?'Thinking':player.lastAction}. Cards: {player.hole.join(', ')||'Not dealt'}.</p>)}</div>{room.phase==='waiting'&&<div className="first-person-welcome"><button onClick={onInvite}><Users size={15}/> Invite friends</button></div>}</>:<><div className="pov-room-backdrop" aria-hidden="true"/><div className="table-world"><div className="table-stage"><div className="poker-table"><div className="table-stitch"/><div className="table-center">{children}</div></div></div></div><div className="pov-seat-layer">{Array.from({length:room.settings.maxPlayers},(_,seat)=>{
+    {render3D?<><ThreePokerScene room={room} now={now} pose={pose} poses={poses} streams={streams} localStream={cameraMode==='video'?stream:null} topDown={topDown} onBookOpen={onBookOpen} bookOpen={bookOpen} onReady={sceneReady}/><div className="sr-only" aria-label="Table state"><p>Pot: {room.pot.toLocaleString()} chips. Board: {room.board.join(', ')||'Not dealt'}.{room.isDoubleBarrel&&` Second board: ${room.boardTwo.join(', ')||'Not dealt'}.`}</p>{room.players.map(player=><p key={player.id}>{player.name}{player.id===room.me?' (you)':''}: {player.stack.toLocaleString()} chips. {room.turnId===player.id?'Thinking':player.lastAction}. Cards: {player.hole.join(', ')||'Not dealt'}.</p>)}</div>{onBookOpen&&<button className="table-book-trigger" onClick={onBookOpen} aria-label="Open table book" aria-haspopup="dialog" aria-expanded={bookOpen}><BookOpen size={18}/><span>Table book</span><kbd>B</kbd></button>}{room.phase==='waiting'&&!onBookOpen&&<div className="first-person-welcome"><button onClick={onInvite}><Users size={15}/> Invite friends</button></div>}</>:<><div className="pov-room-backdrop" aria-hidden="true"/><div className="table-world"><div className="table-stage"><div className="poker-table"><div className="table-stitch"/><div className="table-center">{children}</div></div></div></div><div className="pov-seat-layer">{Array.from({length:room.settings.maxPlayers},(_,seat)=>{
       const player=room.players.find(p=>p.seat===seat),count=room.settings.maxPlayers;
       const seatOffset=(seat-mySeat+count)%count,angle=Math.PI/2+2*Math.PI*seatOffset/count;
       const depth=(Math.sin(angle)+1)/2,reach=Math.min(seatOffset,count-seatOffset)/(count/2),side=seatOffset<=count/2?-1:1;
       return <PlayerSeat key={seat} p={player} room={room} seconds={seconds} now={now} onInvite={onInvite} style={{'--pov-left':`${50+42*Math.cos(angle)}%`,'--pov-top':`${52+35*Math.sin(angle)}%`,'--pov-mobile-left':`${50+side*40*Math.pow(Math.sin(Math.PI*reach),.6)}%`,'--pov-mobile-top':`${87-71*reach}%`,'--pov-scale':String(.8+depth*.23),'--seat-z':String(Math.round(20+depth*35))} as CSSProperties}/>;
     })}</div></>}
     {render3D&&<TableSceneCues room={room} now={now}/>}
-    {firstPerson&&<div className="first-person-tools"><div className="pov-control-row">
-      <button className={`camera-toggle ${cameraMode==='expressions'?'camera-live':''}`} onClick={()=>toggleCamera('expressions')} disabled={cameraBusy||webGLFailed} aria-pressed={cameraMode==='expressions'}><Camera size={15}/>{cameraMode==='expressions'?'Stop expressions':'Mirror expressions'}</button>
-      <button className={`camera-toggle ${cameraMode==='video'?'camera-live':''}`} onClick={()=>toggleCamera('video')} disabled={cameraBusy||webGLFailed} aria-pressed={cameraMode==='video'}>{cameraMode==='video'?<CameraOff size={15}/>:<Camera size={15}/>} {cameraMode==='video'?'Turn camera off':'Share camera face'}</button>
-      <button className="center-view" onClick={center} aria-label="Center first-person view" title="Center view"><Focus size={16}/></button><span className="look-hint"><MousePointer2 size={12}/> Move to look · drag on touch</span>
-      {stream&&<div className="local-face-preview">{cameraMode==='video'?<CameraFace stream={stream} name="Your" local/>:<TrackedFacePreview face={pose.face||NEUTRAL_FACE}/>}</div>}
-    </div><p className="camera-sharing-note" role="status">{cameraBusy?'Waiting for camera permission…':webGLFailed?'3D graphics are unavailable in this browser. Table view is still playable.':cameraMode==='expressions'?tracking==='loading'?'Starting expression tracking…':tracking==='no-face'?'Looking for your face · camera stays private':`Mirroring facial movements · video stays on your device${peers.needsFallback?' · table updates while peers reconnect':''}`:cameraMode==='video'?'Camera shared with this table · microphone off':!online?'Head movement is reconnecting. You can still play.':'Mirror expressions keeps video private · Share camera face sends video to the table · microphone off'}</p>{cameraError&&<p className="camera-error" role="alert">{cameraError}</p>}</div>}
+    {firstPerson&&(controlsTarget?createPortal(cameraTools,controlsTarget):!onBookOpen?cameraTools:null)}
 
   </div>;
 }
