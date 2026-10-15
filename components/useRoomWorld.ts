@@ -23,7 +23,7 @@ export function useRoomWorld(room:RoomView|null,roaming:boolean){
   },[code]);
   useEffect(()=>{generation.current++;setBody(undefined);setPeers({});setMatch(null);setError('');setOnline(false);if(!code)return;
     const controller=new AbortController();let stopped=false,timer:ReturnType<typeof setTimeout>,lastBeat=0;
-    const poll=async()=>{try{const active=live.current.match?.players.some(p=>p.id===live.current.me),beat=!!active&&Date.now()-lastBeat>20000;await request(beat?{type:'heartbeat'}:undefined,controller.signal);if(beat)lastBeat=Date.now();}catch{if(!stopped)setOnline(false);}finally{if(!stopped)timer=setTimeout(poll,document.hidden?15000:live.current.roaming?800:4000);}};
+    const poll=async()=>{try{const active=live.current.match?.players.some(p=>p.id===live.current.me),beat=!!active&&Date.now()-lastBeat>20000;await request(beat?{type:'heartbeat'}:undefined,controller.signal);if(beat)lastBeat=Date.now();}catch{if(!stopped)setOnline(false);}finally{if(!stopped)timer=setTimeout(poll,document.hidden?15000:live.current.roaming||live.current.match?.players.length===2&&!live.current.match.winnerId?800:4000);}};
     void poll();
     return()=>{stopped=true;generation.current++;controller.abort();clearTimeout(timer);};
   },[code,request]);

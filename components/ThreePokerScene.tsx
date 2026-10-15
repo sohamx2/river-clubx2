@@ -6,14 +6,27 @@ import { characterExpression, EXPRESSION_LABELS, type CharacterExpression } from
 import type { HeadPose } from '@/lib/presence-types';
 import type { PublicPlayer, RoomView, Theme } from '@/lib/types';
 import { chipBreakdown, CHIP_VALUES, DIE_ROLL_MS, OCEAN_WAVE_MS } from '@/lib/table-scene';
-import {fromRoomBody,toRoomBody,type BodyPose} from '@/lib/world-presence';
-import {resolveTableWalk} from '@/lib/table-walk';
+import type {BodyPose} from '@/lib/world-presence';
+import {clubSeat,clubSeatApproach,canUseClubSeat,resolveClubWalk,clubHeadYaw} from '@/lib/club-layout';
+import {createClubInterior,CLUB_BAR} from './club-interior';
+import {createClubPool} from './club-pool-controller';
+import {POOL_BOUNDS,POOL_POSITION,type PoolStatus} from './pool-world';
+import type {RoomWorld} from './useRoomWorld';
+import type {PoolCommands} from './PoolControls';
 import {drawTrackedFace} from '@/lib/draw-tracked-face';
 import {FACE_FIELDS,type FacePose} from '@/lib/face-pose';
 
+export interface ClubActivity {mode:'seated'|'walking'|'pool';near:'seat'|'pool'|'bar'|null}
 interface SceneProps {
+  world:RoomWorld;
+  walkRequest?:number;
+  interactRequest?:number;
+  onActivity?:(activity:ClubActivity)=>void;
+  onSeatChange?:(seated:boolean)=>void;
+  onPoolStatus?:(status:PoolStatus)=>void;
+  onPoolPower?:(power:number)=>void;
+  onPoolCommands?:(commands:PoolCommands|null)=>void;
   room: RoomView;
-  paused?:boolean;
   onBody?:(body:BodyPose)=>void;
   now: number;
   pose: HeadPose;
@@ -81,9 +94,9 @@ export function ThreePokerScene(props: SceneProps) {
     const palette = PALETTES[live.current.room.settings.theme];
     const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
     const scene = new THREE.Scene();
-    scene.background = new THREE.Color(palette.wall);
-    scene.fog = new THREE.Fog(palette.wall, 10, 27);
-    const camera = new THREE.PerspectiveCamera(61, 1, 0.06, 36);
+    scene.background = new THREE.Color('#171110');
+    scene.fog = new THREE.FogExp2('#201511',.023);
+    const camera = new THREE.PerspectiveCamera(65,1,.05,65);
     const viewTarget = new THREE.Vector3();
     const seatedTarget = new THREE.Vector3();
     const overheadTarget = new THREE.Vector3(0, 1.35, 0);
@@ -94,7 +107,7 @@ export function ThreePokerScene(props: SceneProps) {
     renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.25));
     renderer.outputColorSpace = THREE.SRGBColorSpace;
     renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    renderer.toneMappingExposure = 1.35;
+    renderer.toneMappingExposure = 1.2;
     renderer.shadowMap.enabled = element.clientWidth > 700;
     renderer.shadowMap.type = THREE.PCFShadowMap;
     renderer.domElement.style.cssText = 'display:block;width:100%;height:100%;position:absolute;inset:0';
@@ -119,8 +132,10 @@ export function ThreePokerScene(props: SceneProps) {
     let boardSignature = '';
     let handSignature = '';
     let lastRendered = 0;
-    let walking=false,walkYaw=0,walkPitch=-.35,walkReset=live.current.walkReset;
-    let walkPosition={x:0,z:3.55},lastBodySent=0;
+    const initialBody=live.current.world.body;
+    let walking=!!initialBody&&!initialBody.seated,walkYaw=initialBody?.yaw||0,walkPitch=-.12,walkReset=live.current.walkReset;
+    let walkPosition={x:initialBody?.x||0,z:initialBody?.z??3.55},lastBodySent=0,walkRequest=live.current.walkRequest,interactRequest=live.current.interactRequest;
+    let activityKey='';
     const walkKeys=new Set<string>();
     let walkPointer:{id:number;x:number;y:number}|null=null;
     let currentYaw = 0;
@@ -285,72 +300,40 @@ export function ThreePokerScene(props: SceneProps) {
       bookRay.setFromCamera(pointer,camera);
       return bookRay.intersectObject(bookHitbox,false).length>0;
     }
-    const bookMove=(event:globalThis.PointerEvent)=>{if(walkPointer&&walkPointer.id===event.pointerId){walkYaw-=(event.clientX-walkPointer.x)*.004;walkPitch=THREE.MathUtils.clamp(walkPitch-(event.clientY-walkPointer.y)*.003,-1.15,.65);walkPointer={id:event.pointerId,x:event.clientX,y:event.clientY};}bookHovered=hitsBook(event);renderer.domElement.style.cursor=bookHovered?'pointer':'';};
-    const bookDown=(event:globalThis.PointerEvent)=>{if(event.button!==0||live.current.bookOpen)return;if(hitsBook(event))bookPointerDown={x:event.clientX,y:event.clientY,id:event.pointerId};else if(walking){walkPointer={id:event.pointerId,x:event.clientX,y:event.clientY};renderer.domElement.setPointerCapture(event.pointerId);}};
+    const bookMove=(event:globalThis.PointerEvent)=>{if(pool.pointerMove(event))return;if(walkPointer&&walkPointer.id===event.pointerId){walkYaw-=(event.clientX-walkPointer.x)*.004;walkPitch=THREE.MathUtils.clamp(walkPitch-(event.clientY-walkPointer.y)*.003,-1.15,.65);walkPointer={id:event.pointerId,x:event.clientX,y:event.clientY};}bookHovered=hitsBook(event);renderer.domElement.style.cursor=bookHovered?'pointer':'';};
+    const bookDown=(event:globalThis.PointerEvent)=>{if(pool.pointerDown(event))return;if(event.button!==0||live.current.bookOpen)return;if(hitsBook(event))bookPointerDown={x:event.clientX,y:event.clientY,id:event.pointerId};else if(walking){walkPointer={id:event.pointerId,x:event.clientX,y:event.clientY};renderer.domElement.setPointerCapture(event.pointerId);}};
     const bookUp=(event:globalThis.PointerEvent)=>{
+      if(pool.pointerUp(event))return;
       if(renderer.domElement.hasPointerCapture(event.pointerId))renderer.domElement.releasePointerCapture(event.pointerId);walkPointer=null;
       const down=bookPointerDown;bookPointerDown=null;
       if(down&&down.id===event.pointerId&&Math.hypot(event.clientX-down.x,event.clientY-down.y)<7&&hitsBook(event))live.current.onBookOpen?.();
     };
-    const bookLeave=()=>{walkPointer=null;bookHovered=false;bookPointerDown=null;renderer.domElement.style.cursor='';};
+    const bookLeave=()=>{pool.cancelPull();walkPointer=null;bookHovered=false;bookPointerDown=null;renderer.domElement.style.cursor='';};
     renderer.domElement.addEventListener('pointermove',bookMove);
     renderer.domElement.addEventListener('pointerdown',bookDown);
     renderer.domElement.addEventListener('pointerup',bookUp);
     renderer.domElement.addEventListener('pointercancel',bookLeave);
     renderer.domElement.addEventListener('pointerleave',bookLeave);
 
-    // A dimensional bar interior gives the viewer a stable seated frame of reference.
-    const floor = standard('#2c211b');
-    block(world, floor, [0, -.12, 0], [24, .2, 24]);
-    const wall = standard(palette.wall);
-    block(world, wall, [0, 3.05, -8.2], [22, 6.2, .25]);
-    block(world, wall, [-10.8, 3, 0], [.2, 6, 18]); block(world, wall, [10.8, 3, 0], [.2, 6, 18]);
-    const trim = standard('#140f10');
-    for (let x = -10; x <= 10; x += 1.4) block(world, trim, [x, 1.25, -8.03], [.045, 2.5, .055]);
-    block(world, wood, [0, 2.5, -8.0], [22, .13, .14]);
-    for (const x of [-7, 6]) {
-      block(world, rail, [x, 1.7, -7.45], [3.6, 3.4, .5]);
-      for (const y of [.65, 1.6, 2.55, 3.3]) block(world, wood, [x, y, -7.05], [3.9, .14, 1]);
-      for (let i = 0; i < 16; i++) {
-        const bottle = new THREE.Group(); bottle.position.set(x - 1.4 + (i % 4) * .86, .83 + Math.floor(i / 4) * .88, -7.0); world.add(bottle);
-        const glass = standard(['#496356', '#795232', '#714343', '#586674'][i % 4], { metalness: .15, roughness: .25 });
-        const body = mesh(limb, glass, bottle, [0, .2, 0]); body.scale.set(.12, .4, .12);
-        const neck = mesh(limb, glass, bottle, [0, .46, 0]); neck.scale.set(.052, .19, .052);
-        block(bottle, ivory, [0, .23, .122], [.16, .16, .008]);
-      }
-    }
-    block(world, wood, [6, 1.02, -5.4], [5.4, 2, 1.3]); block(world, rail, [6, 2.08, -5.4], [5.75, .19, 1.6]);
-    const door = new THREE.Group(); door.position.set(-3.0, 1.7, -7.99); world.add(door);
-    block(door, wood, [0, 0, 0], [1.85, 3.4, .16]);
-    for (const y of [-.65, .6]) block(door, rail, [0, y, .09], [1.35, 1.04, .045]);
-    ball(door, accent, [.61, -.07, .14], [.06, .06, .06]);
-    for (let x = -9; x <= 9; x += .65) block(world, standard('#413329'), [x, -.005, 0], [.025, .015, 22]);
-    const ambient = new THREE.HemisphereLight('#eef4ff', '#34231c', 1.8); scene.add(ambient);
-    const tableLight = new THREE.SpotLight(palette.light, 78, 17, Math.PI / 2.6, .8, 1.35);
-    tableLight.position.set(0, 6.8, 1.4); tableLight.target.position.set(0, 1, -.8); tableLight.castShadow = true;
-    tableLight.shadow.mapSize.set(512, 512); tableLight.shadow.bias = -.001; scene.add(tableLight, tableLight.target);
-    const fill = new THREE.PointLight('#d8eaff', 19, 14, 1.7); fill.position.set(0, 3.8, 3.5); scene.add(fill);
+    const interior=createClubInterior(scene,renderer,{previewTable:false});
+    const {wall,ambient,tableLight,fill}=interior;
+    const pool=createClubPool({scene,element:renderer.domElement,getRoom:()=>live.current.room,getWorld:()=>live.current.world,blocked:()=>!!walkBlocked(),onActive:active=>{walkKeys.clear();live.current.onWalkingChange?.(active||walking);},onStatus:status=>live.current.onPoolStatus?.(status),onPower:power=>live.current.onPoolPower?.(power)});
+    live.current.onPoolCommands?.(pool);
     const roseLight = new THREE.PointLight('#f04e87',0,12,1.6);roseLight.position.set(-4,3.1,-1.2);scene.add(roseLight);
     const amberLight = new THREE.PointLight('#ffb454',0,11,1.8);amberLight.position.set(4.1,3.5,-4);scene.add(amberLight);
     const loungeDecor = new THREE.Group();world.add(loungeDecor);loungeDecor.visible=false;
     const velvet=standard('#5d1834',{roughness:1});
     for(const side of [-1,1])for(let fold=0;fold<7;fold++){
-      const drape=mesh(limb,velvet,loungeDecor,[side*(4.9+fold*.16),3.55,-7.85]);drape.scale.set(.12,3.1,.15);
+      const drape=mesh(limb,velvet,loungeDecor,[side*(4.9+fold*.16),2.8,-9.7]);drape.scale.set(.12,2.2,.15);
     }
     const loungeSign=drawTexture(768,180,ctx=>{ctx.clearRect(0,0,768,180);ctx.textAlign='center';ctx.fillStyle='#ffb6cf';ctx.font='italic 70px Georgia';ctx.fillText('The Velvet Hour',384,96);ctx.fillStyle='#ffd5ac';ctx.font='21px Georgia';ctx.fillText('A LITTLE MYSTERY. A LITTLE JAZZ.',384,142);});
-    const sign=mesh(geometry(new THREE.PlaneGeometry(4.5,1.05)),material(new THREE.MeshBasicMaterial({map:loungeSign,transparent:true,toneMapped:false})),loungeDecor,[0,4.35,-7.95]);
+    const sign=mesh(geometry(new THREE.PlaneGeometry(4.5,1.05)),material(new THREE.MeshBasicMaterial({map:loungeSign,transparent:true,toneMapped:false})),loungeDecor,[0,3.65,-9.72]);
     sign.castShadow=false;
-    const normalWall=new THREE.Color(palette.wall),roseWall=new THREE.Color('#321824');
-    const normalAmbient=new THREE.Color('#eef4ff'),roseAmbient=new THREE.Color('#ffd4d4');
-    const normalKey=new THREE.Color(palette.light),roseKey=new THREE.Color('#ffc48c');
-    const normalFill=new THREE.Color('#d8eaff'),roseFill=new THREE.Color('#f3a2c3');
+    const normalWall=wall.color.clone(),normalBackground=new THREE.Color('#171110'),roseWall=new THREE.Color('#321824');
+    const normalAmbient=ambient.color.clone(),roseAmbient=new THREE.Color('#ffd4d4');
+    const normalKey=tableLight.color.clone(),roseKey=new THREE.Color('#ffc48c');
+    const normalFill=fill.color.clone(),roseFill=new THREE.Color('#f3a2c3');
     const whiteFelt=new THREE.Color('#ffffff'),roseFelt=new THREE.Color('#f1d4e2');
-    for (const x of [-5.8, 5.8]) {
-      const lamp = mesh(geometry(new THREE.ConeGeometry(.62, .45, 24, 1, true)), rail, world, [x, 4.6, -4.2]); lamp.rotation.x = Math.PI;
-      segment(world, new THREE.Vector3(x, 4.7, -4.2), new THREE.Vector3(x, 6.1, -4.2), .025, chairMetal);
-      ball(world, standard(palette.light, { emissive: palette.light, emissiveIntensity: 2 }), [x, 4.4, -4.2], [.13, .1, .13]);
-      const light = new THREE.PointLight(palette.light, 24, 10, 1.7); light.position.set(x, 4.35, -4.2); scene.add(light);
-    }
     if (live.current.room.settings.theme === 'cyberpunk' || live.current.room.settings.theme === 'astral') {
       const neon = standard(palette.accent, { emissive: palette.accent, emissiveIntensity: 1.6 });
       block(world, neon, [0, 3.0, -8.01], [10, .025, .025]);
@@ -477,13 +460,7 @@ export function ThreePokerScene(props: SceneProps) {
       for(let i=motions.length-1;i>=0;i--)if(removed.has(motions[i].object))motions.splice(i,1);
       for(const child of [...parent.children]){child.traverse(object=>{if(object instanceof THREE.InstancedMesh)object.dispose();});parent.remove(child);}
     }
-    function placement(room:RoomView,id:string) {
-      const player=room.players.find(p=>p.id===id),mySeat=room.players.find(p=>p.id===room.me)?.seat||0;
-      if(!player||id===room.me)return {x:0,z:2.8,facing:Math.PI};
-      const count=room.settings.maxPlayers,angle=(player.seat-mySeat+count)%count/count*Math.PI*2;
-      const x=-(narrow?2.835:4.05)*Math.sin(angle),z=2.8*Math.cos(angle);
-      return {x,z,facing:Math.atan2(-x,-z)};
-    }
+    function placement(room:RoomView,id:string){const player=room.players.find(p=>p.id===id);return clubSeat(player?.seat||0,room.settings.maxPlayers);}
     function playerPoint(room:RoomView,id:string,x=0,forward=1.05,height=FELT_Y) {
       const seat=placement(room,id);
       return new THREE.Vector3(seat.x+x*Math.cos(seat.facing)+forward*Math.sin(seat.facing),height,seat.z-x*Math.sin(seat.facing)+forward*Math.cos(seat.facing));
@@ -557,6 +534,7 @@ export function ThreePokerScene(props: SceneProps) {
       };
       void video.play().catch(() => { /* A blocked video keeps the expressive character face. */ });
     }
+    const ownSeatMarker=sprite(labelTexture('YOUR SEAT',live.current.room.players.find(p=>p.id===live.current.room.me)?.name||'','E to sit down'),.18,.05,world);ownSeatMarker.material.sizeAttenuation=false;ownSeatMarker.visible=false;
     const boardLabels = ['BOARD I','BOARD II'].map(label=>sprite(drawTexture(256,64,ctx=>{
       ctx.fillStyle='#111925da';ctx.beginPath();ctx.roundRect(0,0,256,64,14);ctx.fill();
       ctx.fillStyle=palette.accent;ctx.font='700 34px system-ui';ctx.textAlign='center';ctx.fillText(label,128,44);
@@ -604,12 +582,9 @@ export function ThreePokerScene(props: SceneProps) {
     const potChips=new THREE.Group();chipsOnTable.add(potChips);
     function potPoint(room:RoomView){
       const lines=[room.board,...(room.isDoubleBarrel?[room.boardTwo]:[])].reduce((sum,row)=>sum+Math.max(1,Math.ceil(row.length/(row.length>9?8:Math.max(5,row.length)))),0);
-      return new THREE.Vector3(narrow?1.85:lines>2?2.5:2.15,FELT_Y,-.85);
+      return new THREE.Vector3(lines>2?2.5:2.15,FELT_Y,-.85);
     }
-    function playerStackPoint(room:RoomView,id:string,height=FELT_Y){
-      // Leave the near-right felt clear for the physical table companion.
-      return id===room.me?playerPoint(room,id,narrow?-1.6:-2.3,narrow?2.35:1.9,height):playerPoint(room,id,-.42,1.15,height);
-    }
+    function playerStackPoint(room:RoomView,id:string,height=FELT_Y){return playerPoint(room,id,-.5,1.1,height);}
     function updateChipStacks(room:RoomView){
       const ids=new Set(room.players.map(p=>p.id));
       for(const [id,group] of stackGroups)if(!ids.has(id)){clear(group);group.removeFromParent();stackGroups.delete(id);}
@@ -683,7 +658,7 @@ export function ThreePokerScene(props: SceneProps) {
     }
 
     let posterVideo:HTMLVideoElement|null=null,posterStream:MediaStream|null=null;
-    const posterFrame=new THREE.Group();posterFrame.position.set(1.6,2.8,-7.87);world.add(posterFrame);posterFrame.visible=false;
+    const posterFrame=new THREE.Group();posterFrame.position.set(-5,2.55,-9.72);world.add(posterFrame);posterFrame.visible=false;
     block(posterFrame,wood,[0,0,-.04],[2.75,3.2,.09]);
     const posterPaint=material(new THREE.MeshBasicMaterial({color:'#ffffff',toneMapped:false}));
     mesh(geometry(new THREE.PlaneGeometry(2.55,3.0)),posterPaint,posterFrame,[0,0,.015]);
@@ -786,8 +761,9 @@ export function ThreePokerScene(props: SceneProps) {
       // The same physical room stays visible in portrait; the spectator sits slightly back.
       camera.fov = narrow ? 88 : 69;
       camera.position.set(0,narrow?3.15:2.72,narrow?(live.current.room.settings.maxPlayers>6?5.1:4.75):3.55);
-      table.scale.x = narrow ? .7 : 1;
-      tableBook.position.set(narrow?1.22:1.5,FELT_Y+.012,narrow?1.28:1.22);
+      table.scale.x = 1;
+      tableBook.position.copy(playerPoint(live.current.room,live.current.room.me,-1.35,1.5,FELT_Y+.012));
+      tableBook.rotation.y=placement(live.current.room,live.current.room.me).facing-Math.PI-.18;
       tableBook.scale.setScalar(narrow?1.08:1);
       camera.updateProjectionMatrix(); renderer.shadowMap.enabled = !narrow;
       layoutSignature = '';
@@ -801,16 +777,17 @@ export function ThreePokerScene(props: SceneProps) {
       const signature = `${room.settings.maxPlayers}/${mySeat}/${narrow}/${room.players.map(player => `${player.id}:${player.seat}`).join(',')}`;
       if (signature === layoutSignature) return;
       layoutSignature = signature; clear(emptySeats);
+      tableBook.position.copy(playerPoint(room,room.me,-1.35,1.5,FELT_Y+.012));tableBook.rotation.y=placement(room,room.me).facing-Math.PI-.18;
       const ids = new Set(room.players.filter(player => player.id !== room.me).map(player => player.id));
       for (const [id, actor] of actors) if (!ids.has(id)) { removeActor(actor); actors.delete(id); }
       const count = room.settings.maxPlayers;
       for (let seat = 0; seat < count; seat++) {
-        const offset = (seat - mySeat + count) % count; if (offset === 0) continue;
+        const offset=seat;
         const angle=offset/count*Math.PI*2;
-        const x=-(narrow?2.835:4.05)*Math.sin(angle),z=2.8*Math.cos(angle);
+        const {x,z}=clubSeat(seat,count);
         const facing = Math.atan2(-x, -z);
         const player = room.players.find(candidate => candidate.seat === seat);
-        if (player) {
+        if (player&&player.id!==room.me) {
           const actor = actors.get(player.id) || makeActor(player);
           actor.root.position.set(x, 0, z); actor.root.rotation.y = facing;
           actor.seatAnchor.position.set(x,0,z);actor.seatAnchor.rotation.y=facing;
@@ -828,13 +805,13 @@ export function ThreePokerScene(props: SceneProps) {
         const previous=boardSignature;boardSignature=signature;clear(boards);
         const rows=room.isDoubleBarrel?[firstBoard,room.boardTwo]:[firstBoard];
         const lineCounts=rows.map(row=>Math.max(1,Math.ceil(row.length/(row.length>9?8:Math.max(5,row.length)))));
-        const totalLines=lineCounts.reduce((sum,count)=>sum+count,0),boardScale=totalLines>4?.85:totalLines>2?1:narrow?1.3:1.5;
+        const totalLines=lineCounts.reduce((sum,count)=>sum+count,0),boardScale=totalLines>4?.85:totalLines>2?1:1.5;
         const boardStart=totalLines>2?-1.55:totalLines>1?-.55:0;
         const lineSpacing=totalLines>2?Math.min(.8,2.2/(totalLines-1)):.94;
         let firstLine=0;
         rows.forEach((row,rowIndex)=>{
           const rowGroup=new THREE.Group();boards.add(rowGroup);
-          if(room.isDoubleBarrel){const label=boardLabels[rowIndex];boards.add(label);label.position.set(narrow?0:-2.15,1.31,boardStart+firstLine*lineSpacing-(narrow?.47:0));}
+          if(room.isDoubleBarrel){const label=boardLabels[rowIndex];boards.add(label);label.position.set(-2.15,1.31,boardStart+firstLine*lineSpacing);}
           for(let i=0;i<row.length;i++){
             const perRow=row.length>9?8:Math.max(5,row.length),line=Math.floor(i/perRow),inLine=Math.min(perRow,row.length-line*perRow);
             const spacing=row.length>7?.32:.445,scale=boardScale*(row.length>7?.84:1);
@@ -857,11 +834,11 @@ export function ThreePokerScene(props: SceneProps) {
         if(!own?.folded||shown){
           const cards=own?.hole||[];
           cards.forEach((card,i)=>{
-            const offset=i-(cards.length-1)/2,spacing=cards.length>3?.33:.47;
-            const target=new THREE.Vector3(-.62+offset*spacing,FELT_Y+.013+i*.001,1.3+Math.abs(offset)*.018);
+            const offset=i-(cards.length-1)/2,spacing=cards.length>3?.25:.36;
+            const target=playerPoint(room,room.me,.24+offset*spacing,1.28,FELT_Y+.013+i*.001);
             const delay=newHand?cardDealDelay(room,room.me,i):undefined;
-            const object=makeCard(card,heldCards,target,new THREE.Euler(-Math.PI/2,0,offset*-.05),delay||0,delay!==undefined?dealerOrigin(room):undefined);
-            object.scale.setScalar(cards.length>3?1.3:1.5);
+            const object=makeCard(card,heldCards,target,new THREE.Euler(-Math.PI/2,0,placement(room,room.me).facing-Math.PI+offset*-.05),delay||0,delay!==undefined?dealerOrigin(room):undefined);
+            object.scale.setScalar(cards.length>3?1.1:1.25);
           });
         }
       }
@@ -872,19 +849,18 @@ export function ThreePokerScene(props: SceneProps) {
         const actor = actors.get(player.id); if (!actor) continue;
         const expression = characterExpression(player, room, now);
         const remotePose = live.current.poses[player.id] || { yaw: 0, pitch: 0 };
-        const body=remotePose.body,mySeat=room.players.find(p=>p.id===room.me)?.seat||0;
-        actor.root.visible=body?.area!=='bar';actor.nameplate.visible=actor.root.visible;
-        const target=body?.area==='table'&&!body.seated?fromRoomBody(body,mySeat,room.settings.maxPlayers):null;
+        const body=remotePose.body;
+        actor.root.visible=true;actor.nameplate.visible=true;
+        const target=body&&!body.seated?body:null;
         const seat=placement(room,player.id);
-        actor.root.position.lerp(new THREE.Vector3(target?target.x*(narrow?.7:1):seat.x,0,target?target.z:seat.z),.24);
+        actor.root.position.lerp(new THREE.Vector3(target?target.x:seat.x,0,target?target.z:seat.z),.24);
         const facing=target?target.yaw+Math.PI:seat.facing;actor.root.rotation.y+=Math.atan2(Math.sin(facing-actor.root.rotation.y),Math.cos(facing-actor.root.rotation.y))*.24;
         actor.nameplate.position.set(actor.root.position.x,2.78,actor.root.position.z);actor.reaction.position.set(actor.root.position.x+.44,2.95,actor.root.position.z);
         const breathing = reducedMotion ? 0 : Math.sin((time - born) / 900 + actor.idlePhase) * .009;
         actor.head.position.y = 2.04 + breathing;
-        // Apply the sender's view-relative yaw in avatar space. The character
-        // face is oriented toward the table, so reversing this value makes a
-        // leftward camera turn appear as a rightward head turn to other seats.
-        actor.head.rotation.y += ((target?0:remotePose.yaw * .62) - actor.head.rotation.y) * .16;
+        // The shared camera heading and avatar face use opposite forward axes.
+        // Converting them in room space keeps every observer's gaze consistent.
+        actor.head.rotation.y += ((target?0:body?clubHeadYaw(body.yaw,seat.facing):remotePose.yaw*.62) - actor.head.rotation.y) * .16;
         actor.head.rotation.x += (remotePose.pitch * .3 - actor.head.rotation.x) * .16;
         const tilt = remotePose.face?0:expression === 'thinking' ? -.12 : expression === 'fold' ? .11 : 0;
         actor.head.rotation.z += (tilt - actor.head.rotation.z) * .09;
@@ -906,8 +882,8 @@ export function ThreePokerScene(props: SceneProps) {
           const newHand=actor.hole?.split('/')[0]!==String(room.handNo);actor.hole=hole;clear(actor.cards);
           if(!player.folded||shown)player.hole.forEach((card,i)=>{
             const offset=i-(player.hole.length-1)/2,delay=newHand?cardDealDelay(room,player.id,i):undefined;
-            const object=makeCard(card,actor.cards,new THREE.Vector3(.24+offset*.25,FELT_Y+.008+i*.001,1.08),new THREE.Euler(-Math.PI/2,0,offset*-.04),delay||0,delay!==undefined?dealerOrigin(room):undefined);
-            object.scale.setScalar(room.settings.maxPlayers>7?.9:1.1);
+            const object=makeCard(card,actor.cards,new THREE.Vector3(.24+offset*(player.hole.length>3?.25:.36),FELT_Y+.013+i*.001,1.28),new THREE.Euler(-Math.PI/2,0,offset*-.04),delay||0,delay!==undefined?dealerOrigin(room):undefined);
+            object.scale.setScalar(player.hole.length>3?1.1:1.25);
           });
         }
         const reaction = player.reaction?.expiresAt && player.reaction.expiresAt > now ? player.reaction.emoji : '';
@@ -920,18 +896,22 @@ export function ThreePokerScene(props: SceneProps) {
       }
       if (element!.dataset.cameraFaces !== String(cameraFaces)) element!.dataset.cameraFaces = String(cameraFaces);
     }
-    const walkBlocked=()=>live.current.paused||live.current.bookOpen||!!document.querySelector('dialog[open]');
+    const walkBlocked=()=>live.current.bookOpen||!!document.querySelector('dialog[open],[role="dialog"][aria-modal="true"]');
     const walkKeyDown=(event:KeyboardEvent)=>{
       if(event.ctrlKey||event.metaKey||event.altKey||walkBlocked()||live.current.topDown||(event.target as HTMLElement)?.closest('input,select,textarea,[contenteditable=true]'))return;
-      const key=event.key.toLowerCase();if(!['w','a','s','d','arrowup','arrowdown','arrowleft','arrowright'].includes(key))return;
+      if(pool.keyDown(event))return;
+      const key=event.key.toLowerCase();if(key==='e'&&!event.repeat){event.preventDefault();interact();return;}if(!['w','a','s','d','arrowup','arrowdown','arrowleft','arrowright'].includes(key))return;
       event.preventDefault();walkKeys.add(key);
     };
-    const walkKeyUp=(event:KeyboardEvent)=>walkKeys.delete(event.key.toLowerCase());
-    const stopWalkingInput=()=>{walkKeys.clear();walkPointer=null;};
+    const walkKeyUp=(event:KeyboardEvent)=>{pool.keyUp(event);walkKeys.delete(event.key.toLowerCase());};
+    const stopWalkingInput=()=>{walkKeys.clear();walkPointer=null;pool.cancelPull();};
     window.addEventListener('keydown',walkKeyDown);window.addEventListener('keyup',walkKeyUp);window.addEventListener('blur',stopWalkingInput);document.addEventListener('visibilitychange',stopWalkingInput);
+    function ownSeat(){const room=live.current.room;return room.players.find(p=>p.id===room.me)?.seat||0;}
+    function standUp(){if(walking||pool.isActive())return;walking=true;walkPosition=clubSeatApproach(ownSeat(),live.current.room.settings.maxPlayers);walkYaw=placement(live.current.room,live.current.room.me).facing-Math.PI;walkPitch=-.12;live.current.onWalkingChange?.(true);live.current.onSeatChange?.(false);}
+    function nearby(){if(!walking)return null;if(canUseClubSeat(walkPosition,ownSeat(),live.current.room.settings.maxPlayers))return 'seat';if(Math.hypot(walkPosition.x-POOL_POSITION.x,walkPosition.z-POOL_POSITION.z)<2.9)return 'pool';if(walkPosition.z>CLUB_BAR.z+.75&&Math.hypot(walkPosition.x-CLUB_BAR.x,walkPosition.z-(CLUB_BAR.z+1.5))<3.35)return 'bar';return null;}
+    function interact(){if(walkBlocked())return;if(!walking&&!pool.isActive()){const me=live.current.room.players.find(p=>p.id===live.current.room.me);if(me?.sittingOut||me?.sitNext===true)live.current.onSeatChange?.(true);return;}if(pool.isActive()){pool.leavePool();return;}const near=nearby();if(near==='seat'){walking=false;walkKeys.clear();live.current.onWalkingChange?.(false);live.current.onSeatChange?.(true);}else if(near==='pool')pool.enter();else if(near==='bar')live.current.onBookOpen?.();}
     function animate(time: number) {
       if (disposed) return;
-      if(live.current.paused){walkKeys.clear();previousFrame=time;animationFrame=requestAnimationFrame(animate);return;}
       // Bound GPU work when video encoding/decoding shares the device.
       const videoActive=!!live.current.localStream||Object.keys(live.current.streams).length>0;
       const interval=narrow||videoActive?1000/30:1000/45;
@@ -947,10 +927,10 @@ export function ThreePokerScene(props: SceneProps) {
       bookGold.emissiveIntensity=THREE.MathUtils.damp(bookGold.emissiveIntensity,bookHovered?.75:.08,8,dt/1000);
       const loungeTarget=room.isStripClub?1:0;
       loungeBlend=reducedMotion?loungeTarget:THREE.MathUtils.damp(loungeBlend,loungeTarget,1.8,dt/1000);
-      (scene.background as THREE.Color).copy(normalWall).lerp(roseWall,loungeBlend);
-      (scene.fog as THREE.Fog).color.copy(scene.background as THREE.Color);
+      (scene.background as THREE.Color).copy(normalBackground).lerp(roseWall,loungeBlend);
+      (scene.fog as THREE.FogExp2).color.copy(scene.background as THREE.Color);
       wall.color.copy(normalWall).lerp(roseWall,loungeBlend);
-      ambient.color.copy(normalAmbient).lerp(roseAmbient,loungeBlend);ambient.intensity=1.8-.28*loungeBlend;
+      ambient.color.copy(normalAmbient).lerp(roseAmbient,loungeBlend);ambient.intensity=1-.15*loungeBlend;
       tableLight.color.copy(normalKey).lerp(roseKey,loungeBlend);
       fill.color.copy(normalFill).lerp(roseFill,loungeBlend);
       felt.color.copy(whiteFelt).lerp(roseFelt,loungeBlend);
@@ -958,37 +938,42 @@ export function ThreePokerScene(props: SceneProps) {
       const loungeTheme=room.isStripClub?'velvet':'standard';if(element!.dataset.loungeTheme!==loungeTheme)element!.dataset.loungeTheme=loungeTheme;
       const blendTarget=live.current.topDown?1:0;
       topDownBlend=reducedMotion?blendTarget:THREE.MathUtils.damp(topDownBlend,blendTarget,4.5,dt/1000);
-      const seatedY=narrow?3.15:2.72,seatedZ=narrow?(room.settings.maxPlayers>6?5.1:4.75):3.55;
-      seatedPosition.set(0,seatedY,seatedZ);
-      // Stand at the near rail and lean forward, keeping the room's vertical upright.
-      overheadPosition.set(0,narrow?3.9:3.5,narrow?2.65:2.35);
+      const own=placement(room,room.me),seatYaw=own.facing-Math.PI;
+      const seatedY=narrow?2.7:2.5,outward=narrow?.65:.35;
+      seatedPosition.set(own.x-Math.sin(own.facing)*outward,seatedY,own.z-Math.cos(own.facing)*outward);
+      overheadPosition.set(own.x+Math.sin(own.facing)*.15,narrow?3.45:3.25,own.z+Math.cos(own.facing)*.15);
       if(walkBlocked()||document.hidden){walkKeys.clear();walkPointer=null;}
-      if(live.current.walkReset!==walkReset||live.current.topDown){walkReset=live.current.walkReset;if(walking){walking=false;live.current.onWalkingChange?.(false);}walkKeys.clear();}
+      if(live.current.walkRequest!==walkRequest){walkRequest=live.current.walkRequest;standUp();}
+      if(live.current.interactRequest!==interactRequest){interactRequest=live.current.interactRequest;interact();}
+      if(live.current.walkReset!==walkReset){walkReset=live.current.walkReset;if(!walking&&!pool.isActive()){currentYaw=0;currentPitch=0;}}
       const forward=(walkKeys.has('w')||walkKeys.has('arrowup')?1:0)-(walkKeys.has('s')||walkKeys.has('arrowdown')?1:0)+(walkBlocked()?0:live.current.walkInput?.forward||0);
       const right=(walkKeys.has('d')?1:0)-(walkKeys.has('a')?1:0)+(walkBlocked()?0:live.current.walkInput?.right||0);
-      if((forward||right)&&!live.current.topDown){
-        if(!walking){walking=true;walkPosition={x:camera.position.x,z:camera.position.z};walkYaw=-currentYaw*.52;live.current.onWalkingChange?.(true);}
-        const distance=2.4*dt/1000/Math.max(1,Math.hypot(forward,right));
-        const chairs=[...actors.values()].map(actor=>({minX:actor.root.position.x-.32,maxX:actor.root.position.x+.32,minZ:actor.root.position.z-.32,maxZ:actor.root.position.z+.32}));
-        walkPosition=resolveTableWalk(walkPosition,{x:(-Math.sin(walkYaw)*forward+Math.cos(walkYaw)*right)*distance,z:(-Math.cos(walkYaw)*forward-Math.sin(walkYaw)*right)*distance},narrow?.7:1,chairs);
+      if((forward||right)&&!live.current.topDown&&!pool.isActive()){
+        standUp();const distance=2.7*dt/1000/Math.max(1,Math.hypot(forward,right));
+        const chairs=Array.from({length:room.settings.maxPlayers},(_,seat)=>{const p=clubSeat(seat,room.settings.maxPlayers);return{minX:p.x-.35,maxX:p.x+.35,minZ:p.z-.35,maxZ:p.z+.35};});
+        walkPosition=resolveClubWalk(walkPosition,{x:(-Math.sin(walkYaw)*forward+Math.cos(walkYaw)*right)*distance,z:(-Math.cos(walkYaw)*forward-Math.sin(walkYaw)*right)*distance},[POOL_BOUNDS,...interior.obstacles,...chairs]);
       }
-      if(walking){if(walkKeys.has('arrowleft'))walkYaw+=dt*.0015;if(walkKeys.has('arrowright'))walkYaw-=dt*.0015;}
-      camera.position.lerpVectors(seatedPosition,overheadPosition,topDownBlend);camera.up.copy(worldUp);
-
-      const yaw=currentYaw*(narrow?.44:.52)*(1-topDownBlend);
-      const baselinePitch=Math.atan2(FELT_Y-seatedY,seatedZ-.5);
+      if(walking&&!pool.isActive()){if(walkKeys.has('arrowleft'))walkYaw+=dt*.0015;if(walkKeys.has('arrowright'))walkYaw-=dt*.0015;}
+      camera.position.lerpVectors(seatedPosition,overheadPosition,walking||pool.isActive()?0:topDownBlend);camera.up.copy(worldUp);
+      const yaw=seatYaw-currentYaw*.52*(1-topDownBlend),baselinePitch=Math.atan2(FELT_Y-seatedY,Math.hypot(seatedPosition.x,seatedPosition.z));
       const lookPitch=baselinePitch-currentPitch*.14*(1-topDownBlend);
-      seatedTarget.set(Math.sin(yaw)*10,seatedY+Math.tan(lookPitch)*10,seatedZ-10*Math.cos(yaw));
-      overheadTarget.set(0,FELT_Y,1.3);viewTarget.lerpVectors(seatedTarget,overheadTarget,topDownBlend);
-      if(walking){camera.position.set(walkPosition.x,3.0,walkPosition.z);viewTarget.set(walkPosition.x-Math.sin(walkYaw)*10,3+Math.tan(walkPitch)*10,walkPosition.z-Math.cos(walkYaw)*10);}
-      if(time-lastBodySent>100){const seat=room.players.find(p=>p.id===room.me)?.seat||0;live.current.onBody?.(toRoomBody({area:'table',x:walking?walkPosition.x/(narrow?.7:1):0,z:walking?walkPosition.z:2.8,yaw:walking?walkYaw:0,seated:!walking,moving:!!(forward||right)},seat,room.settings.maxPlayers));lastBodySent=time;}
-      hands.visible=!walking;
-      element!.dataset.walking=String(walking);
+      seatedTarget.set(seatedPosition.x-Math.sin(yaw)*10,seatedY+Math.tan(lookPitch)*10,seatedPosition.z-Math.cos(yaw)*10);
+      overheadTarget.copy(playerPoint(room,room.me,.3,1.5,FELT_Y));viewTarget.lerpVectors(seatedTarget,overheadTarget,topDownBlend);
+      if(walking){camera.position.set(walkPosition.x,2.35,walkPosition.z);viewTarget.set(walkPosition.x-Math.sin(walkYaw)*10,2.35+Math.tan(walkPitch)*10,walkPosition.z-Math.cos(walkYaw)*10);}
+      pool.update(dt/1000);
+      if(pool.isActive()){const view=pool.pool.getView();camera.position.set(view.eye.x,view.eye.y,view.eye.z);viewTarget.set(view.target.x,view.target.y,view.target.z);}
+      if(time-lastBodySent>100){const standing=walking||pool.isActive(),eye=standing?camera.position:own;live.current.onBody?.({area:'bar',x:eye.x,z:eye.z,yaw:pool.isActive()?Math.atan2(camera.position.x-viewTarget.x,camera.position.z-viewTarget.z):walking?walkYaw:yaw,seated:!standing,moving:!!(forward||right)&&!pool.isActive()});lastBodySent=time;}
+      ownSeatMarker.position.set(own.x,1.7,own.z);ownSeatMarker.visible=walking&&!pool.isActive();
+      hands.position.set(own.x,0,own.z);hands.rotation.y=own.facing;hands.visible=!walking&&!pool.isActive();
+      const mode=pool.isActive()?'pool':walking?'walking':'seated',near=nearby(),key=`${mode}/${near}`;
+      if(key!==activityKey){activityKey=key;live.current.onActivity?.({mode,near});}
+      element!.dataset.walking=String(walking);element!.dataset.clubMode=mode;element!.dataset.near=near||'';
+      interior.update(time,camera.position,reducedMotion);
       camera.lookAt(viewTarget);
-      const fov=(narrow?88:69)+6*topDownBlend;if(Math.abs(camera.fov-fov)>.02){camera.fov=fov;camera.updateProjectionMatrix();}
+      const fov=(pool.isActive()?(narrow?74:60):walking?(narrow?82:70):(narrow?88:69))+6*topDownBlend;if(Math.abs(camera.fov-fov)>.02){camera.fov=fov;camera.updateProjectionMatrix();}
       updateLayout(room);processEvents(room,time);updateCards(room,time);updateActors(room,now,time);
       const dealer=room.players.find(player=>player.seat===room.dealerSeat);dealerButton.visible=!!dealer&&room.handNo>0;
-      if(dealer)dealerButton.position.copy(playerPoint(room,dealer.id,dealer.id===room.me?-.25:-.65,dealer.id===room.me?.85:1.2,FELT_Y+.026));
+      if(dealer)dealerButton.position.copy(playerPoint(room,dealer.id,.8,.65,FELT_Y+.026));
       updateChipStacks(room);updateSideEffects(room,time);updateBountyPoster(room,time);animateMotions(time);
       animateArms(ownArms,room.me,time);
       renderer.render(scene, camera);
@@ -1000,7 +985,7 @@ export function ThreePokerScene(props: SceneProps) {
     catch { live.current.onReady?.(false); }
 
     return () => {
-      disposed = true; cancelAnimationFrame(animationFrame); resizeObserver.disconnect();
+      disposed = true; cancelAnimationFrame(animationFrame); resizeObserver.disconnect();pool.dispose();interior.dispose();live.current.onPoolCommands?.(null);
       window.removeEventListener('keydown',walkKeyDown);window.removeEventListener('keyup',walkKeyUp);window.removeEventListener('blur',stopWalkingInput);document.removeEventListener('visibilitychange',stopWalkingInput);
       renderer.domElement.removeEventListener('webglcontextlost', contextLost);
       renderer.domElement.removeEventListener('pointermove',bookMove);
@@ -1016,7 +1001,7 @@ export function ThreePokerScene(props: SceneProps) {
     };
   }, [props.room.code, props.room.settings.theme]);
 
-  return <div ref={host} className="three-poker-canvas" data-camera-faces="0" role="img" aria-label="First-person 3D poker table with seated human characters. Move your pointer to look around. WASD to walk around the live table.">
+  return <div ref={host} className="three-poker-canvas" data-camera-faces="0" role="img" aria-label="Shared 3D poker lounge with bartender, poker table, and pool. WASD to get up and walk. E at your chair to sit down, or at the pool table to play.">
     <span className="sr-only">{props.room.players.filter(player => player.id !== props.room.me).map(player => `${player.name}: ${props.poses[player.id]?.face?'mirroring facial movements':EXPRESSION_LABELS[characterExpression(player, props.room, props.now)]}, ${player.lastAction || 'ready'}, ${player.stack.toLocaleString()} chips.`).join(' ')}</span>
   </div>;
 }
