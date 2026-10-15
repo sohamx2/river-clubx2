@@ -1,5 +1,5 @@
 'use client';
-import { useCallback,useEffect,useRef,useState } from 'react';
+import { useCallback,useEffect,useMemo,useRef,useState } from 'react';
 import type { HeadPose,PeerMessage,PresenceSnapshot } from '@/lib/presence-types';
 import {parseAvatarPose} from '@/lib/avatar-pose';
 
@@ -127,6 +127,6 @@ export function useTablePeers({me,playerIds,sessionId,snapshot,localStream,camer
     for(const peer of peers.current.values())if(peer.channel?.readyState==='open'&&peer.channel.bufferedAmount<1024)try{peer.channel.send(packet);}catch{}
   },[]);
   useEffect(()=>{const heartbeat=setInterval(()=>broadcast(latestPose.current),1000);return()=>clearInterval(heartbeat);},[broadcast]);
-  const livePoses=Object.fromEntries(Object.entries(poses).filter(([id])=>peers.current.get(id)?.channel?.readyState==='open'));
+  const livePoses=useMemo(()=>Object.fromEntries(Object.entries(poses).filter(([id])=>peers.current.get(id)?.channel?.readyState==='open')),[poses,connected]);
   return {streams,poses:livePoses,broadcast,connected,failed,needsFallback:connected<playerIds.length-1};
 }

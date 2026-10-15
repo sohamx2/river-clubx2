@@ -6,12 +6,15 @@ import { characterExpression, EXPRESSION_LABELS, type CharacterExpression } from
 import type { HeadPose } from '@/lib/presence-types';
 import type { PublicPlayer, RoomView, Theme } from '@/lib/types';
 import { chipBreakdown, CHIP_VALUES, DIE_ROLL_MS, OCEAN_WAVE_MS } from '@/lib/table-scene';
+import {fromRoomBody,toRoomBody,type BodyPose} from '@/lib/world-presence';
 import {resolveTableWalk} from '@/lib/table-walk';
 import {drawTrackedFace} from '@/lib/draw-tracked-face';
 import {FACE_FIELDS,type FacePose} from '@/lib/face-pose';
 
 interface SceneProps {
   room: RoomView;
+  paused?:boolean;
+  onBody?:(body:BodyPose)=>void;
   now: number;
   pose: HeadPose;
   poses: Record<string, HeadPose>;
@@ -36,6 +39,7 @@ const PALETTES: Record<Theme, { felt: string; wall: string; wood: string; rail: 
 
 interface Actor {
   root: THREE.Group;
+  seatAnchor:THREE.Group;
   head: THREE.Group;
   face: THREE.Mesh<THREE.PlaneGeometry, THREE.MeshBasicMaterial>;
   nameplate: THREE.Sprite;
@@ -116,7 +120,7 @@ export function ThreePokerScene(props: SceneProps) {
     let handSignature = '';
     let lastRendered = 0;
     let walking=false,walkYaw=0,walkPitch=-.35,walkReset=live.current.walkReset;
-    let walkPosition={x:0,z:3.55};
+    let walkPosition={x:0,z:3.55},lastBodySent=0;
     const walkKeys=new Set<string>();
     let walkPointer:{id:number;x:number;y:number}|null=null;
     let currentYaw = 0;
@@ -476,9 +480,8 @@ export function ThreePokerScene(props: SceneProps) {
     function placement(room:RoomView,id:string) {
       const player=room.players.find(p=>p.id===id),mySeat=room.players.find(p=>p.id===room.me)?.seat||0;
       if(!player||id===room.me)return {x:0,z:2.8,facing:Math.PI};
-      const count=room.settings.maxPlayers,offset=(player.seat-mySeat+count)%count,span=Math.min(1,(count-1)/5);
-      const progress=count===2?.5:(1-span)/2+(offset-1)/(count-2)*span,angle=progress*Math.PI;
-      const x=-(narrow?2.38:3.86)*Math.cos(angle),z=(narrow?-1.1:-.6)-(narrow?1.8:2.2)*Math.sin(angle);
+      const count=room.settings.maxPlayers,angle=(player.seat-mySeat+count)%count/count*Math.PI*2;
+      const x=-(narrow?2.835:4.05)*Math.sin(angle),z=2.8*Math.cos(angle);
       return {x,z,facing:Math.atan2(-x,-z)};
     }
     function playerPoint(room:RoomView,id:string,x=0,forward=1.05,height=FELT_Y) {
@@ -506,7 +509,7 @@ export function ThreePokerScene(props: SceneProps) {
       return {leftArm,rightArm};
     }
     function makeActor(player: PublicPlayer) {
-      const root = new THREE.Group(); world.add(root); chair(root);
+      const root = new THREE.Group(),seatAnchor=new THREE.Group(); world.add(root,seatAnchor); chair(seatAnchor);
       const shirt = standard(`hsl(${(player.seat * 47 + 27) % 360}, 35%, 43%)`);
       const trouser = standard('#24252a');
       segment(root, new THREE.Vector3(0, .82, 0), new THREE.Vector3(0, 1.63, 0), .12, shirt);
@@ -527,9 +530,9 @@ export function ThreePokerScene(props: SceneProps) {
       face.castShadow = false;
       const nameplate = sprite(labelTexture(player.name, player.stack.toLocaleString()), 1.1, .275, world);
       nameplate.material.sizeAttenuation=false;
-      const cards = new THREE.Group(); root.add(cards);
+      const cards = new THREE.Group(); seatAnchor.add(cards);
       const reaction = sprite(drawTexture(128, 128, () => {}), .42, .42, world); reaction.visible = false;
-      const actor: Actor = { root, head, face, nameplate, cards, reaction, leftArm, rightArm, idlePhase: player.seat * 1.83 };
+      const actor: Actor = { root, seatAnchor, head, face, nameplate, cards, reaction, leftArm, rightArm, idlePhase: player.seat * 1.83 };
       actors.set(player.id, actor); return actor;
     }
     function stopVideo(actor: Actor) {
@@ -539,7 +542,7 @@ export function ThreePokerScene(props: SceneProps) {
     function removeActor(actor: Actor) {
       stopVideo(actor); retireTexture(actor.nameplate.material.map); retireTexture(actor.reaction.material.map);
       const id=[...actors].find(([,candidate])=>candidate===actor)?.[0];if(id){retireTexture(trackedFaces.get(id)?.texture);trackedFaces.delete(id);}
-      world.remove(actor.root, actor.nameplate, actor.reaction);
+      world.remove(actor.root,actor.seatAnchor, actor.nameplate, actor.reaction);
     }
     function attachVideo(actor: Actor, stream?: MediaStream) {
       if (actor.videoStream === stream) return;
@@ -803,16 +806,14 @@ export function ThreePokerScene(props: SceneProps) {
       const count = room.settings.maxPlayers;
       for (let seat = 0; seat < count; seat++) {
         const offset = (seat - mySeat + count) % count; if (offset === 0) continue;
-        // A horseshoe keeps the full group in the seated view, even for a ten-seat table.
-        const span = Math.min(1, (count - 1) / 5);
-        const progress = count === 2 ? .5 : (1 - span) / 2 + (offset - 1) / (count - 2) * span;
-        const angle = progress * Math.PI;
-        const x = -(narrow ? 2.38 : 3.86) * Math.cos(angle), z = (narrow ? -1.1 : -.6) - (narrow ? 1.8 : 2.2) * Math.sin(angle);
+        const angle=offset/count*Math.PI*2;
+        const x=-(narrow?2.835:4.05)*Math.sin(angle),z=2.8*Math.cos(angle);
         const facing = Math.atan2(-x, -z);
         const player = room.players.find(candidate => candidate.seat === seat);
         if (player) {
           const actor = actors.get(player.id) || makeActor(player);
           actor.root.position.set(x, 0, z); actor.root.rotation.y = facing;
+          actor.seatAnchor.position.set(x,0,z);actor.seatAnchor.rotation.y=facing;
           actor.nameplate.position.set(x * (narrow ? .86 : .96), 2.78, z + .05); actor.nameplate.scale.set(narrow ? .23 : .24, narrow ? .067 : .07, 1);
           actor.reaction.position.set(x + .44, 2.95, z); actor.reaction.scale.setScalar(narrow ? .58 : .46);
         } else {
@@ -871,17 +872,25 @@ export function ThreePokerScene(props: SceneProps) {
         const actor = actors.get(player.id); if (!actor) continue;
         const expression = characterExpression(player, room, now);
         const remotePose = live.current.poses[player.id] || { yaw: 0, pitch: 0 };
+        const body=remotePose.body,mySeat=room.players.find(p=>p.id===room.me)?.seat||0;
+        actor.root.visible=body?.area!=='bar';actor.nameplate.visible=actor.root.visible;
+        const target=body?.area==='table'&&!body.seated?fromRoomBody(body,mySeat,room.settings.maxPlayers):null;
+        const seat=placement(room,player.id);
+        actor.root.position.lerp(new THREE.Vector3(target?target.x*(narrow?.7:1):seat.x,0,target?target.z:seat.z),.24);
+        const facing=target?target.yaw+Math.PI:seat.facing;actor.root.rotation.y+=Math.atan2(Math.sin(facing-actor.root.rotation.y),Math.cos(facing-actor.root.rotation.y))*.24;
+        actor.nameplate.position.set(actor.root.position.x,2.78,actor.root.position.z);actor.reaction.position.set(actor.root.position.x+.44,2.95,actor.root.position.z);
         const breathing = reducedMotion ? 0 : Math.sin((time - born) / 900 + actor.idlePhase) * .009;
         actor.head.position.y = 2.04 + breathing;
         // Apply the sender's view-relative yaw in avatar space. The character
         // face is oriented toward the table, so reversing this value makes a
         // leftward camera turn appear as a rightward head turn to other seats.
-        actor.head.rotation.y += (remotePose.yaw * .62 - actor.head.rotation.y) * .16;
+        actor.head.rotation.y += ((target?0:remotePose.yaw * .62) - actor.head.rotation.y) * .16;
         actor.head.rotation.x += (remotePose.pitch * .3 - actor.head.rotation.x) * .16;
         const tilt = remotePose.face?0:expression === 'thinking' ? -.12 : expression === 'fold' ? .11 : 0;
         actor.head.rotation.z += (tilt - actor.head.rotation.z) * .09;
         const armAngle = expression === 'winner' || expression === 'fire' ? -.8 : expression === 'thinking' ? -.25 : 0;
         animateArms(actor,player.id,time,armAngle);
+        if(body?.moving&&!body.seated){actor.leftArm.rotation.x=Math.sin(time*.009)*.5;actor.rightArm.rotation.x=-Math.sin(time*.009)*.5;}
         attachVideo(actor, live.current.streams[player.id]);
         const useVideo = actor.videoTexture && actor.video && actor.video.readyState >= 2;
         if (useVideo) cameraFaces++;
@@ -907,11 +916,11 @@ export function ThreePokerScene(props: SceneProps) {
           actor.expression = expression; actor.reaction.userData.key = reactionKey;
           if (reaction) setSpriteTexture(actor.reaction, drawTexture(128, 128, ctx => { ctx.font = '95px system-ui'; ctx.textAlign = 'center'; ctx.fillText(reaction, 64, 101); }));
         }
-        actor.reaction.visible = !!reaction;
+        actor.reaction.visible = !!reaction&&actor.root.visible;
       }
       if (element!.dataset.cameraFaces !== String(cameraFaces)) element!.dataset.cameraFaces = String(cameraFaces);
     }
-    const walkBlocked=()=>live.current.bookOpen||!!document.querySelector('dialog[open]');
+    const walkBlocked=()=>live.current.paused||live.current.bookOpen||!!document.querySelector('dialog[open]');
     const walkKeyDown=(event:KeyboardEvent)=>{
       if(event.ctrlKey||event.metaKey||event.altKey||walkBlocked()||live.current.topDown||(event.target as HTMLElement)?.closest('input,select,textarea,[contenteditable=true]'))return;
       const key=event.key.toLowerCase();if(!['w','a','s','d','arrowup','arrowdown','arrowleft','arrowright'].includes(key))return;
@@ -922,6 +931,7 @@ export function ThreePokerScene(props: SceneProps) {
     window.addEventListener('keydown',walkKeyDown);window.addEventListener('keyup',walkKeyUp);window.addEventListener('blur',stopWalkingInput);document.addEventListener('visibilitychange',stopWalkingInput);
     function animate(time: number) {
       if (disposed) return;
+      if(live.current.paused){walkKeys.clear();previousFrame=time;animationFrame=requestAnimationFrame(animate);return;}
       // Bound GPU work when video encoding/decoding shares the device.
       const videoActive=!!live.current.localStream||Object.keys(live.current.streams).length>0;
       const interval=narrow||videoActive?1000/30:1000/45;
@@ -971,6 +981,7 @@ export function ThreePokerScene(props: SceneProps) {
       seatedTarget.set(Math.sin(yaw)*10,seatedY+Math.tan(lookPitch)*10,seatedZ-10*Math.cos(yaw));
       overheadTarget.set(0,FELT_Y,1.3);viewTarget.lerpVectors(seatedTarget,overheadTarget,topDownBlend);
       if(walking){camera.position.set(walkPosition.x,3.0,walkPosition.z);viewTarget.set(walkPosition.x-Math.sin(walkYaw)*10,3+Math.tan(walkPitch)*10,walkPosition.z-Math.cos(walkYaw)*10);}
+      if(time-lastBodySent>100){const seat=room.players.find(p=>p.id===room.me)?.seat||0;live.current.onBody?.(toRoomBody({area:'table',x:walking?walkPosition.x/(narrow?.7:1):0,z:walking?walkPosition.z:2.8,yaw:walking?walkYaw:0,seated:!walking,moving:!!(forward||right)},seat,room.settings.maxPlayers));lastBodySent=time;}
       hands.visible=!walking;
       element!.dataset.walking=String(walking);
       camera.lookAt(viewTarget);

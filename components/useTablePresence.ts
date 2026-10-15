@@ -1,4 +1,5 @@
 'use client';
+import {bodyChanged} from '@/lib/world-presence';
 import { useCallback,useEffect,useRef,useState } from 'react';
 import type { HeadPose,PeerMessage,PresenceSnapshot,PresenceWrite } from '@/lib/presence-types';
 import {faceChanged} from '@/lib/face-pose';
@@ -27,7 +28,7 @@ export function useTablePresence(code:string) {
     const poll=async()=>{
       if(stopped||inFlight)return;inFlight=true;
       try {
-        const changed=Math.abs(pose.current.yaw-lastPose.yaw)+Math.abs(pose.current.pitch-lastPose.pitch)>.04||faceChanged(pose.current.face,lastPose.face);
+        const changed=Math.abs(pose.current.yaw-lastPose.yaw)+Math.abs(pose.current.pitch-lastPose.pitch)>.04||faceChanged(pose.current.face,lastPose.face)||bodyChanged(pose.current.body,lastPose.body);
         if(Date.now()-lastWrite>10000||fallback.current&&changed) {
           const sent={...pose.current};await request({type:'pose',sessionId,...sent});lastPose=sent;lastWrite=Date.now();
         } else await request();

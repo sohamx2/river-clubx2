@@ -18,7 +18,8 @@ test('presence preserves the active camera across stale tab writes and keeps sig
     await presence('ABC234',ids,first,{type:'pose',sessionId:oldSession,yaw:.1,pitch:.2});
     await presence('ABC234',ids,first,{type:'camera',sessionId:oldSession,cameraSession:randomUUID()});
     const face={...NEUTRAL_FACE,smileLeft:.4,blinkRight:.8};
-    await presence('ABC234',ids,first,{type:'pose',sessionId:activeSession,yaw:.6,pitch:-.4,face});
+    const body={area:'bar' as const,x:-5,z:-3,yaw:1,seated:false,moving:true};
+    await presence('ABC234',ids,first,{type:'pose',sessionId:activeSession,yaw:.6,pitch:-.4,face,body});
     await presence('ABC234',ids,first,{type:'camera',sessionId:activeSession,cameraSession});
     for(const camera of [null,randomUUID()])await presence('ABC234',ids,first,{type:'camera',sessionId:oldSession,cameraSession:camera,face:null});
     const reloaded=(await presence('ABC234',ids,second)).players.find(p=>p.id===first);
@@ -26,6 +27,7 @@ test('presence preserves the active camera across stale tab writes and keeps sig
     assert.equal(reloaded?.cameraSession,cameraSession);
     assert.equal(reloaded?.yaw,.6);
     assert.deepEqual(reloaded?.face,face);
+    assert.deepEqual(reloaded?.body,body);
 
     await presence('ABC234',ids,first,{type:'pose',sessionId:activeSession,yaw:-.3,pitch:.1});
     assert.equal((await presence('ABC234',ids,first)).players.find(p=>p.id===first)?.cameraSession,cameraSession);

@@ -4,6 +4,7 @@ import path from 'node:path';
 import { GameError } from './engine';
 import type { Room } from './types';
 export const schema = [
+ `CREATE TABLE IF NOT EXISTS river_pool (code TEXT PRIMARY KEY, state JSONB NOT NULL, revision INTEGER NOT NULL DEFAULT 0, updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`,
  `CREATE TABLE IF NOT EXISTS river_rooms (code TEXT PRIMARY KEY, state JSONB NOT NULL, revision INTEGER NOT NULL DEFAULT 0, updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`,
  `CREATE INDEX IF NOT EXISTS river_rooms_updated ON river_rooms(updated_at)`,
  `CREATE TABLE IF NOT EXISTS river_limits (key TEXT PRIMARY KEY, count INTEGER NOT NULL, expires_at TIMESTAMPTZ NOT NULL)`,
@@ -50,4 +51,4 @@ export async function rateLimit(key:string,limit:number,windowMs:number){
  if(sql){const rows=await sql`INSERT INTO river_limits (key,count,expires_at) VALUES (${bucket},1,${new Date(Date.now()+windowMs).toISOString()}::timestamptz) ON CONFLICT (key) DO UPDATE SET count=river_limits.count+1 RETURNING count`;if(Number(rows[0].count)>limit)throw new GameError('Too many requests. Please wait a moment.',429);}
  else{g.riverRates??=new Map();for(const[k,v]of g.riverRates)if(v.expires<Date.now())g.riverRates.delete(k);const entry=g.riverRates.get(bucket)||{count:0,expires:Date.now()+windowMs};entry.count++;g.riverRates.set(bucket,entry);if(entry.count>limit)throw new GameError('Too many requests. Please wait a moment.',429);}
 }
-export async function cleanup(){await ensureSchema();const sql=database();if(sql){await sql`DELETE FROM river_rooms WHERE updated_at < NOW() - INTERVAL '7 days'`;await sql`DELETE FROM river_limits WHERE expires_at < NOW()`;await sql`DELETE FROM river_presence WHERE updated_at < NOW() - INTERVAL '1 minute'`;await sql`DELETE FROM river_signals WHERE created_at < NOW() - INTERVAL '2 minutes'`;}}
+export async function cleanup(){await ensureSchema();const sql=database();if(sql){await sql`DELETE FROM river_pool WHERE updated_at < NOW() - INTERVAL '7 days'`;await sql`DELETE FROM river_rooms WHERE updated_at < NOW() - INTERVAL '7 days'`;await sql`DELETE FROM river_limits WHERE expires_at < NOW()`;await sql`DELETE FROM river_presence WHERE updated_at < NOW() - INTERVAL '1 minute'`;await sql`DELETE FROM river_signals WHERE created_at < NOW() - INTERVAL '2 minutes'`;}}

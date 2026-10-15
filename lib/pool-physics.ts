@@ -1,4 +1,4 @@
-/** Local practice billiards: equal-mass sphere impulses on a fixed 240 Hz clock. */
+/** Deterministic billiards: equal-mass sphere impulses on a fixed 240 Hz clock. */
 export interface PoolBall {
   id:number; x:number; z:number; vx:number; vz:number; pocketed:boolean;
 }

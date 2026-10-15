@@ -1,3 +1,4 @@
+import {parseBodyPose} from './world-presence';
 import {parseFacePose} from './face-pose';
 import type {HeadPose} from './presence-types';
 
@@ -8,5 +9,7 @@ export function parseAvatarPose(value:unknown):HeadPose|null {
   if(typeof input.yaw!=='number'||typeof input.pitch!=='number'||!Number.isFinite(input.yaw)||!Number.isFinite(input.pitch)||Math.abs(input.yaw)>1||Math.abs(input.pitch)>1)return null;
   const face=input.face==null?null:parseFacePose(input.face);
   if(input.face!=null&&!face)return null;
-  return {yaw:input.yaw,pitch:input.pitch,face};
+  const body=input.body===undefined?undefined:parseBodyPose(input.body);
+  if(body===null)return null;
+  return {yaw:input.yaw,pitch:input.pitch,face,...(body?{body}:{})};
 }

@@ -7,7 +7,7 @@ type RecordState={players:TablePresence[];signals:TableSignal[]};
 function updatePlayer(previous:TablePresence|undefined,id:string,write:Exclude<PresenceWrite,{type:'signal'}>,now:number):TablePresence {
   const sameSession=previous?.sessionId===write.sessionId;
   const base=sameSession?previous!:{id,sessionId:write.sessionId,yaw:0,pitch:0,cameraSession:null,updatedAt:now};
-  return {...base,...(write.type==='pose'?{yaw:write.yaw,pitch:write.pitch,face:write.face??null}:{cameraSession:write.cameraSession,...(write.face===null?{face:null}:{})}),updatedAt:now};
+  return {...base,...(write.type==='pose'?{yaw:write.yaw,pitch:write.pitch,face:write.face??null,...(write.body?{body:write.body}:{})}:{cameraSession:write.cameraSession,...(write.face===null?{face:null}:{})}),updatedAt:now};
 }
 function snapshot(state:RecordState,ids:string[],me:string,now:number):PresenceSnapshot {
   return {players:state.players.filter(p=>ids.includes(p.id)&&now-p.updatedAt<PRESENCE_TTL),signals:state.signals.filter(s=>s.to===me&&ids.includes(s.from)&&now-s.createdAt<SIGNAL_TTL).slice(-150),serverNow:now};
@@ -24,7 +24,7 @@ export async function presence(code:string,ids:string[],me:string,write?:Presenc
       await sql`UPDATE river_presence SET state=state || ${JSON.stringify({cameraSession:write.cameraSession,...(write.face===null?{face:null}:{}),updatedAt:now})}::jsonb, updated_at=NOW() WHERE code=${code} AND player_id=${me} AND state->>'sessionId'=${write.sessionId}`;
     } else if(write) {
       // One atomic merge per player; updates cannot overwrite another player's pose.
-      const patch={yaw:write.yaw,pitch:write.pitch,face:write.face??null};
+      const patch={yaw:write.yaw,pitch:write.pitch,face:write.face??null,...(write.body?{body:write.body}:{})};
       const initial=updatePlayer(undefined,me,write,now);
       await sql`INSERT INTO river_presence (code,player_id,state) VALUES (${code},${me},${JSON.stringify(initial)}::jsonb) ON CONFLICT (code,player_id) DO UPDATE SET state=(CASE WHEN river_presence.state->>'sessionId'=${write.sessionId} THEN river_presence.state ELSE ${JSON.stringify(initial)}::jsonb END) || ${JSON.stringify({...patch,sessionId:write.sessionId,updatedAt:now})}::jsonb, updated_at=NOW()`;
     }

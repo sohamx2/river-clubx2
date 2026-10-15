@@ -3,11 +3,17 @@
 import {useEffect, useRef, useState} from 'react';
 import * as THREE from 'three';
 import {createPoolWorld, POOL_BOUNDS, POOL_POSITION} from '@/components/pool-world';
+import type {RoomView} from '@/lib/types';
+import type {RoomWorld} from './useRoomWorld';
+import {drawTrackedFace} from '@/lib/draw-tracked-face';
+import {NEUTRAL_FACE} from '@/lib/face-pose';
 import {cuePullFromDrag} from '@/lib/pool-controls';
 import {resolveHubMovement, type HubObstacle} from '@/lib/hub-controls';
 import '@/app/world-hub.css';
 
 interface WorldHubProps {
+  room?:RoomView|null;
+  world?:RoomWorld;
   entered: boolean;
   paused?: boolean;
   onEnter: () => void;
@@ -132,10 +138,49 @@ export function WorldHub(props:WorldHubProps) {
     sign('TAKE YOUR TIME','THE NIGHT IS STILL YOUNG',2.1,1.05,[9.78,2.55,4.1],-Math.PI/2);
     // Low-cost warm wall fixtures, with no full-screen post processing.
     for(const side of [-1,1])for(const z of [-6,2,7]){box(brass,scene,[side*9.7,2.6,z],[.12,.6,.18]);orb(warmGlow,scene,[side*9.56,2.58,z],[.1,.21,.1]);const glow=new THREE.PointLight('#e9a861',6,3.8,2);glow.position.set(side*9.3,2.6,z);scene.add(glow);}
-    const pool=createPoolWorld({scene,onStatus:setPoolStatus,onPlayingChange:active=>{poolMode=active;setPoolActive(active);held.clear();resize();}});
+    const pool=createPoolWorld({scene,onStatus:setPoolStatus,
+      shared:()=>{const p=live.current;if(!p.room||!p.world)return null;return{match:p.world.pool.match,me:p.room.me,now:p.world.pool.serverNow(),online:p.world.pool.online,busy:p.world.pool.busy};},
+      onShot:(dx,dz,power)=>live.current.world?.pool.shoot(dx,dz,power)||Promise.resolve(false),
+      onPlayingChange:active=>{poolMode=active;setPoolActive(active);held.clear();resize();const p=live.current,m=p.world?.pool.match;if(p.room&&p.world){if(active&&!m?.players.some(v=>v.id===p.room!.me)&&(!m||m.players.length<2))void p.world.pool.send({type:'join'});else if(!active&&m?.players.some(v=>v.id===p.room!.me))void p.world.pool.send({type:'leave'});}}});
+    // Room peers use the same interpolated body coordinates in the lounge.
+    const guests=new Map<string,{root:THREE.Group;head:THREE.Group;left:THREE.Group;right:THREE.Group;label:THREE.Sprite;labelMap:THREE.CanvasTexture;faceMap:THREE.CanvasTexture;faceKey:string;labelKey:string}>();
+    function makeGuest(id:string,seat:number){
+      const root=new THREE.Group();scene.add(root);const shirt=standard(`hsl(${(seat*47+27)%360},35%,43%)`);
+      segment(root,new THREE.Vector3(0,.8,0),new THREE.Vector3(0,1.38,0),.1,shirt);orb(shirt,root,[0,1.4,0],[.27,.11,.15]);
+      for(const side of [-1,1]){segment(root,new THREE.Vector3(side*.13,.83,0),new THREE.Vector3(side*.13,.12,0),.065,black);orb(black,root,[side*.13,.08,.09],[.09,.06,.15]);}
+      const left=new THREE.Group(),right=new THREE.Group();for(const [side,arm]of [[-1,left],[1,right]] as const){root.add(arm);arm.position.set(side*.25,1.37,0);segment(arm,new THREE.Vector3(),new THREE.Vector3(side*.1,-.6,.02),.055,skin);orb(skin,arm,[side*.1,-.63,.02],[.06,.075,.06]);}
+      const guestHead=new THREE.Group();root.add(guestHead);guestHead.position.set(0,1.75,0);orb(skin,guestHead,[0,0,0],[.24,.28,.225]);orb(hair,guestHead,[0,.16,-.04],[.245,.11,.22]);
+      const faceMap=canvasTexture(256,256,ctx=>drawTrackedFace(ctx,NEUTRAL_FACE));add(geo(new THREE.PlaneGeometry(.4,.4)),mat(new THREE.MeshBasicMaterial({map:faceMap,transparent:true,depthWrite:false})),guestHead,[0,-.015,.221],[1,1,1]);
+      const labelMap=canvasTexture(512,128,()=>{}),label=new THREE.Sprite(mat(new THREE.SpriteMaterial({map:labelMap,depthTest:false,sizeAttenuation:false})));label.scale.set(.24,.06,1);scene.add(label);
+      const guest={root,head:guestHead,left,right,label,labelMap,faceMap,faceKey:'',labelKey:''};guests.set(id,guest);return guest;
+    }
+    function updateGuests(time:number,dt:number){
+      const p=live.current,room=p.room,peers=p.world?.peers||{};
+      for(const [id,guest]of guests)if(!room?.players.some(player=>player.id===id)){guest.root.removeFromParent();guest.label.removeFromParent();guests.delete(id);}
+      if(!room)return;
+      let visible=0;
+      for(const person of room.players){if(person.id===room.me)continue;const pose=peers[person.id],body=pose?.body;const guest=guests.get(person.id)||makeGuest(person.id,person.seat);
+        // Table coordinates have their own origin; the lounge's smaller table is its portal.
+        const seated=!body||body.area==='table',angle=person.seat/room.settings.maxPlayers*Math.PI*2;
+        const target=seated?{x:.9-Math.sin(angle)*3.24,z:1+Math.cos(angle)*2.05,yaw:-angle}:body;
+        const targetX=body?.area==='table'&&!body.seated? .9+body.x*.72:target.x;
+        const targetZ=body?.area==='table'&&!body.seated?1+body.z*.73:target.z;
+        if(!guest.root.userData.placed){guest.root.position.set(targetX,0,targetZ);guest.root.userData.placed=true;}
+        guest.root.position.x=THREE.MathUtils.damp(guest.root.position.x,targetX,12,dt);guest.root.position.z=THREE.MathUtils.damp(guest.root.position.z,targetZ,12,dt);
+        const facing=(body?.area==='table'&&!body.seated?body.yaw:target.yaw)+Math.PI;guest.root.rotation.y+=Math.atan2(Math.sin(facing-guest.root.rotation.y),Math.cos(facing-guest.root.rotation.y))*Math.min(1,dt*12);
+        const swing=body?.moving?Math.sin(time*.009)*.45:0;guest.left.rotation.x=swing;guest.right.rotation.x=-swing;guest.head.rotation.y=body&&!body.seated?0:(pose?.yaw||0)*.62;guest.head.rotation.x=(pose?.pitch||0)*.3;
+        guest.label.position.copy(guest.root.position);guest.label.position.y=2.25;
+        const reaction=person.reaction&&person.reaction.expiresAt>Date.now()?person.reaction.emoji:'';
+        const labelKey=`${person.name}/${person.stack}/${reaction}`;if(guest.labelKey!==labelKey){guest.labelKey=labelKey;const ctx=(guest.labelMap.image as HTMLCanvasElement).getContext('2d')!;ctx.clearRect(0,0,512,128);ctx.fillStyle='#101a17c9';ctx.beginPath();ctx.roundRect(0,0,512,128,24);ctx.fill();ctx.fillStyle='#f4e9cf';ctx.textAlign='center';ctx.font='bold 35px Arial';ctx.fillText(`${person.name} ${reaction}`,256,49);ctx.font='29px Arial';ctx.fillStyle='#ddc98e';ctx.fillText(`${person.stack.toLocaleString()} chips`,256,97);guest.labelMap.needsUpdate=true;}
+        const faceKey=JSON.stringify(pose?.face||reaction);if(guest.faceKey!==faceKey){guest.faceKey=faceKey;drawTrackedFace((guest.faceMap.image as HTMLCanvasElement).getContext('2d')!,pose?.face||{...NEUTRAL_FACE,smileLeft:reaction==='😢'?0:reaction ? .8 : 0,smileRight:reaction==='😢'?0:reaction ? .8 : 0,frownLeft:reaction==='😢' ? .9 : 0,frownRight:reaction==='😢' ? .9 : 0});guest.faceMap.needsUpdate=true;}
+        visible++;
+      }
+      element!.dataset.worldPeers=String(visible);
+    }
     const stoolObstacles=[-3.4,-1.15,1.15,3.4].map(offset=>({minX:BAR.x+offset-.34,maxX:BAR.x+offset+.34,minZ:BAR.z+1.56,maxZ:BAR.z+2.24}));
     const obstacles:HubObstacle[]=[{minX:-2,maxX:3.8,minZ:-.6,maxZ:2.6},{minX:-.4,maxX:8.8,minZ:-7.66,maxZ:-5.94},POOL_BOUNDS,{minX:8.2,maxX:9.7,minZ:1.2,maxZ:6.2},...chairObstacles,...stoolObstacles];
     let poolMode=false,disposed=false,frame=0,lastFrame=0,lastDraw=0,yaw=0,pitch=-.045,walkingPhase=0,cinematicStart=-1,cinematicDone=live.current.entered;
+    let lastBodySent=0;
     let drawPower=0,pullStarted:number|null=null,poolPointerX:number|null=null;
     let nearValue:'bar'|'pool'|null=null;
     const held=new Set<string>();
@@ -150,7 +195,7 @@ export function WorldHub(props:WorldHubProps) {
     const blocked=()=>Boolean(live.current.paused||document.querySelector('dialog[open], [role="dialog"][aria-modal="true"]'));
     const setDraw=(value:number)=>{drawPower=value;pool.setDraw(value);setPower(previous=>Math.abs(previous-value)>.005?value:previous);};
     const cancelPull=()=>{pullStarted=null;setDraw(0);};
-    const beginPull=()=>{if(!blocked()&&!pool.getState().moving){pullStarted=performance.now();setDraw(0);}};
+    const beginPull=()=>{if(!blocked()&&pool.canShoot()&&!pool.getState().moving){pullStarted=performance.now();setDraw(0);}};
     const releasePull=()=>{pullStarted=null;if(drawPower>=.04&&!blocked())pool.shoot(drawPower);setDraw(0);};
     const showHint=(message:string)=>{setHint(message);if(hintTimer)clearTimeout(hintTimer);hintTimer=setTimeout(()=>setHint(''),3500);};
     function interact(){
@@ -164,7 +209,7 @@ export function WorldHub(props:WorldHubProps) {
       enter:()=>{if(cinematicStart>=0||cinematicDone)return;cinematicStart=performance.now();setEntering(true);},
       interact,
       leavePool:()=>{cancelPull();pool.setActive(false);held.clear();},
-      beginPull,releasePull,cancelPull,resetPool:()=>pool.reset(),
+      beginPull,releasePull,cancelPull,resetPool:()=>{if(live.current.room)void live.current.world?.pool.send({type:'rematch'});else pool.reset();},
       move:(key,pressed)=>{if(pressed)held.add(key);else held.delete(key);},
     };
     const resize=()=>{const width=element.clientWidth,height=element.clientHeight;if(!width||!height)return;renderer.setSize(width,height,false);camera.aspect=width/height;camera.fov=poolMode?(width<650?74:60):width<650?74:65;camera.updateProjectionMatrix();};resize();const observer=new ResizeObserver(resize);observer.observe(element);
@@ -204,7 +249,8 @@ export function WorldHub(props:WorldHubProps) {
     setReady(true);
     function tick(time:number){
       if(disposed)return;frame=requestAnimationFrame(tick);const dt=Math.min((time-lastFrame)/1000||0,.045);lastFrame=time;if(document.hidden)return;
-      pool.update(dt);
+      pool.update(dt);updateGuests(time,dt);
+      if(live.current.room&&time-lastBodySent>100){const moving=held.size>0&&!blocked()&&!poolMode;const eye=poolMode?pool.getView().eye:player;live.current.world?.onBody({area:'bar',x:eye.x,z:eye.z,yaw:poolMode?Math.atan2(eye.x-pool.getView().target.x,eye.z-pool.getView().target.z):yaw,seated:false,moving});lastBodySent=time;}
       if(blocked()){held.clear();dragging=false;if(pullStarted!==null||drawPower)cancelPull();}
       if(pullStarted!==null)setDraw(Math.min(1,(performance.now()-pullStarted)/1100));
       const active=live.current.entered||cinematicDone;
@@ -227,6 +273,10 @@ export function WorldHub(props:WorldHubProps) {
     return()=>{disposed=true;cancelAnimationFrame(frame);if(hintTimer)clearTimeout(hintTimer);observer.disconnect();commands.current=null;pool.dispose();window.removeEventListener('keydown',keyDown);window.removeEventListener('keyup',keyUp);window.removeEventListener('blur',blur);document.removeEventListener('visibilitychange',blur);renderer.domElement.removeEventListener('pointerdown',pointerDown);renderer.domElement.removeEventListener('pointermove',pointerMove);renderer.domElement.removeEventListener('pointerup',pointerUp);renderer.domElement.removeEventListener('pointercancel',cancelPointer);renderer.domElement.removeEventListener('webglcontextlost',contextLost);geometries.forEach(value=>value.dispose());materials.forEach(value=>value.dispose());textures.forEach(value=>value.dispose());renderer.dispose();renderer.domElement.remove();};
   },[]);
 
+  const match=props.world?.pool.match,myPoolSeat=match?.players.some(p=>p.id===props.room?.me),poolTurn=match?.turnId===props.room?.me;
+  const poolName=(id:string|null|undefined)=>props.room?.players.find(p=>p.id===id)?.name||'Player';
+  const poolMessage=props.room?props.world?.pool.error||(!props.world?.pool.online?'Connecting to shared pool…':!match?'Loading match…':match.shot&&props.world.pool.serverNow()<match.shot.finishAt?'Balls rolling…':match.winnerId?match.winnerId==='draw'?'A tie. Play a rematch.':`${poolName(match.winnerId)} wins!`:match.players.length<2?'Waiting for a second player…':`${poolTurn?'Your':poolName(match.turnId)+'’s'} turn · ${match.message}`):poolStatus.message;
+  const canShoot=!props.room||!!(props.world?.pool.online&&!props.world.pool.busy&&myPoolSeat&&poolTurn&&!match?.winnerId&&match?.players.length===2&&(!match.shot||props.world.pool.serverNow()>=match.shot.finishAt));
   const play=()=>commands.current?.enter();
   const mobileMove=(key:string,pressed:boolean)=>commands.current?.move(key,pressed);
   return <section className={`world-hub ${props.entered?'hub-entered':''} ${entering?'hub-entering':''}`} aria-label="River Club walkable bar">
@@ -238,10 +288,10 @@ export function WorldHub(props:WorldHubProps) {
     {props.entered&&!failed&&<>
       {!poolActive&&<div className="hub-world-caption"><span>THE NIGHT IS YOURS</span><p>Find the bartender to host or join your table.</p></div>}
       {hint&&<div className="hub-status-toast" role="status">{hint}</div>}
-      {!poolActive&&<div className={`hub-interact ${near?'available':''}`} aria-live="polite">{near?<><span className="hub-interact-name">{near==='bar'?'THE BARTENDER':'THE POOL TABLE'}</span><button onClick={()=>commands.current?.interact()}><kbd>E</kbd>{near==='bar'?'Talk to the bartender':'Play a little pool'}<span aria-hidden>↗</span></button><small>{near==='bar'?'Host a room · Join your friends':'Local practice · Real ball physics'}</small></>:<span className="hub-explore-hint">Drag to look around</span>}</div>}
+      {!poolActive&&<div className={`hub-interact ${near?'available':''}`} aria-live="polite">{near?<><span className="hub-interact-name">{near==='bar'?'THE BARTENDER':'THE POOL TABLE'}</span><button onClick={()=>commands.current?.interact()}><kbd>E</kbd>{near==='bar'?'Talk to the bartender':'Play a little pool'}<span aria-hidden>↗</span></button><small>{near==='bar'?'Host a room · Join your friends':props.room?'Shared pool · Join or watch':'Local practice · Join a room to challenge friends'}</small></>:<span className="hub-explore-hint">Drag to look around</span>}</div>}
       {!poolActive&&<div className="hub-walk-guide" aria-label="Movement instructions"><span className="hub-key-cluster"><kbd>W</kbd><span><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd></span></span><span>Walk around<br/><small>Drag to look · E to interact</small></span></div>}
       {!poolActive&&<div className="hub-touch-walk" aria-label="Touch movement controls">{[{key:'w',label:'Walk forward',symbol:'↑'},{key:'a',label:'Walk left',symbol:'←'},{key:'s',label:'Walk backward',symbol:'↓'},{key:'d',label:'Walk right',symbol:'→'}].map(({key,label,symbol})=><button key={key} className={`hub-move-${key}`} aria-label={label} onPointerDown={event=>{event.preventDefault();event.currentTarget.setPointerCapture(event.pointerId);mobileMove(key,true);}} onPointerUp={()=>mobileMove(key,false)} onPointerCancel={()=>mobileMove(key,false)} onLostPointerCapture={()=>mobileMove(key,false)}>{symbol}</button>)}</div>}
-      {poolActive&&<aside className="hub-pool-controls" aria-label="Pool practice controls"><div className="hub-pool-title"><span><small>FIRST PERSON POOL</small><strong>A little pool.</strong></span><button aria-label="Leave pool table" onClick={()=>commands.current?.leavePool()}>✕</button></div><p aria-live="polite">{poolStatus.message}</p><div className="hub-pool-score"><span>{poolStatus.pocketed} / 15 <small>POCKETED</small></span><span>{poolStatus.shots} <small>SHOTS</small></span><button onClick={()=>commands.current?.resetPool()}>Re-rack</button></div><div className="pool-draw-meter" role="meter" aria-label="Cue pullback" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(power*100)}><span style={{width:`${power*100}%`}}/></div><button className="hub-pool-shoot" onPointerDown={event=>{event.preventDefault();event.currentTarget.setPointerCapture(event.pointerId);commands.current?.beginPull();}} onPointerUp={()=>commands.current?.releasePull()} onKeyDown={event=>{if(event.key==='Enter'){event.preventDefault();if(!event.repeat)commands.current?.beginPull();}}} onKeyUp={event=>{if(event.key==='Enter'){event.preventDefault();commands.current?.releasePull();}}} onPointerCancel={()=>commands.current?.cancelPull()} onLostPointerCapture={()=>commands.current?.cancelPull()} disabled={poolStatus.moving}>{poolStatus.moving?'Balls in motion…':power>.01?'Release to shoot':'Hold to draw cue'} <span aria-hidden>↗</span></button><small className="hub-pool-note">Move pointer to aim · drag down on the table & release to shoot<br/>Or hold Space / the button · Local practice · Esc to leave</small></aside>}
+      {poolActive&&<aside className="hub-pool-controls" aria-label="Pool controls"><div className="hub-pool-title"><span><small>FIRST PERSON POOL</small><strong>{props.room?'Friends at the felt.':'A little pool.'}</strong></span><button aria-label="Leave pool table" onClick={()=>commands.current?.leavePool()}>✕</button></div><p aria-live="polite">{poolMessage}</p><div className="hub-pool-score">{props.room?<>{match?.players.map(p=><span key={p.id} className={match.turnId===p.id?'pool-current-player':''}>{match.scores[p.id]||0} <small>{poolName(p.id)}{p.id===props.room?.me?' (you)':''}</small></span>)}{!myPoolSeat&&(!match||match.players.length<2)&&<button disabled={props.world?.pool.busy} onClick={()=>props.world?.pool.send({type:'join'})}>Join match</button>}{match?.winnerId&&myPoolSeat&&match.players.length===2&&<button disabled={props.world?.pool.busy||!!(match.shot&&props.world&&props.world.pool.serverNow()<match.shot.finishAt)} onClick={()=>commands.current?.resetPool()}>Rematch</button>}{myPoolSeat&&<button onClick={()=>props.world?.pool.send({type:'leave'})}>Leave match</button>}</>:<><span>{poolStatus.pocketed} / 15 <small>POCKETED</small></span><span>{poolStatus.shots} <small>SHOTS</small></span><button onClick={()=>commands.current?.resetPool()}>Re-rack</button></>}</div><div className="pool-draw-meter" role="meter" aria-label="Cue pullback" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(power*100)}><span style={{width:`${power*100}%`}}/></div><button className="hub-pool-shoot" onPointerDown={event=>{event.preventDefault();event.currentTarget.setPointerCapture(event.pointerId);commands.current?.beginPull();}} onPointerUp={()=>commands.current?.releasePull()} onKeyDown={event=>{if(event.key==='Enter'){event.preventDefault();if(!event.repeat)commands.current?.beginPull();}}} onKeyUp={event=>{if(event.key==='Enter'){event.preventDefault();commands.current?.releasePull();}}} onPointerCancel={()=>commands.current?.cancelPull()} onLostPointerCapture={()=>commands.current?.cancelPull()} disabled={poolStatus.moving||!canShoot}>{poolStatus.moving?'Balls in motion…':!canShoot?myPoolSeat?'Waiting for your turn':'Watching the match':power>.01?'Release to shoot':'Hold to draw cue'} <span aria-hidden>↗</span></button><small className="hub-pool-note">Move pointer to aim · drag down on the table & release to shoot<br/>Or hold Space / the button · {props.room?'First to 8 · Scratch = no points + pass':'Local practice'} · Esc to leave</small></aside>}
     </>}
     {!props.entered&&!failed&&<footer className="hub-menu-bottom"><span>2–10 FRIENDS <i/> NO HOUSE. JUST US.</span><span>LEAVE THE WORLD AT THE DOOR.</span></footer>}
   </section>;
