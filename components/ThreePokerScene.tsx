@@ -6,6 +6,7 @@ import { characterExpression, EXPRESSION_LABELS, type CharacterExpression } from
 import type { HeadPose } from '@/lib/presence-types';
 import type { PublicPlayer, RoomView, Theme } from '@/lib/types';
 import { chipBreakdown, CHIP_VALUES, DIE_ROLL_MS, OCEAN_WAVE_MS } from '@/lib/table-scene';
+import {resolveTableWalk} from '@/lib/table-walk';
 import {drawTrackedFace} from '@/lib/draw-tracked-face';
 import {FACE_FIELDS,type FacePose} from '@/lib/face-pose';
 
@@ -20,6 +21,9 @@ interface SceneProps {
   onBookOpen?: () => void;
   bookOpen?: boolean;
   onReady?: (ready: boolean) => void;
+  onWalkingChange?: (walking:boolean)=>void;
+  walkReset?:number;
+  walkInput?:{forward:number;right:number};
 }
 
 const PALETTES: Record<Theme, { felt: string; wall: string; wood: string; rail: string; light: string; accent: string; card: string; ink: string; red: string; back: string }> = {
@@ -111,6 +115,10 @@ export function ThreePokerScene(props: SceneProps) {
     let boardSignature = '';
     let handSignature = '';
     let lastRendered = 0;
+    let walking=false,walkYaw=0,walkPitch=-.35,walkReset=live.current.walkReset;
+    let walkPosition={x:0,z:3.55};
+    const walkKeys=new Set<string>();
+    let walkPointer:{id:number;x:number;y:number}|null=null;
     let currentYaw = 0;
     let currentPitch = 0;
     let topDownBlend = 0;
@@ -185,14 +193,12 @@ export function ThreePokerScene(props: SceneProps) {
       if (old) { old.dispose(); textures.delete(old); }
     }
     function labelTexture(title: string, detail: string, action = '', active = false) {
-      return drawTexture(640, 190, ctx => {
-        ctx.fillStyle = active ? '#31463bee' : '#131a20ee';
-        ctx.beginPath(); ctx.roundRect(4, 4, 632, 182, 28); ctx.fill();
-        ctx.strokeStyle = active ? palette.accent : '#d6d8c84d'; ctx.lineWidth = active ? 6 : 3; ctx.stroke();
-        ctx.textAlign = 'center'; ctx.fillStyle = '#fff8e8'; ctx.font = '700 48px system-ui';
-        ctx.fillText(title.slice(0, 20), 320, 67, 570);
-        ctx.fillStyle = palette.accent; ctx.font = '700 44px system-ui'; ctx.fillText(detail, 320, 120, 570);
-        if (action) { ctx.fillStyle = '#dce6e2'; ctx.font = '500 28px system-ui'; ctx.fillText(action, 320, 164, 570); }
+      return drawTexture(512,128,ctx=>{
+        ctx.fillStyle=active?'#20352bd4':'#10191c85';ctx.beginPath();ctx.roundRect(12,5,488,118,18);ctx.fill();
+        if(active){ctx.fillStyle=palette.accent;ctx.beginPath();ctx.arc(33,31,5,0,Math.PI*2);ctx.fill();}
+        ctx.textAlign='center';ctx.fillStyle='#fff8e8';ctx.font='600 44px system-ui';ctx.fillText(title.slice(0,20),256,39,440);
+        ctx.fillStyle=palette.accent;ctx.font='700 40px system-ui';ctx.fillText(detail,256,77,450);
+        if(action){ctx.fillStyle='#e0e9e4';ctx.font='22px system-ui';ctx.fillText(action,256,108,450);}
       });
     }
     function sprite(map: THREE.Texture, width: number, height: number, parent: THREE.Object3D) {
@@ -275,13 +281,14 @@ export function ThreePokerScene(props: SceneProps) {
       bookRay.setFromCamera(pointer,camera);
       return bookRay.intersectObject(bookHitbox,false).length>0;
     }
-    const bookMove=(event:globalThis.PointerEvent)=>{bookHovered=hitsBook(event);renderer.domElement.style.cursor=bookHovered?'pointer':'';};
-    const bookDown=(event:globalThis.PointerEvent)=>{if(event.button===0&&hitsBook(event))bookPointerDown={x:event.clientX,y:event.clientY,id:event.pointerId};};
+    const bookMove=(event:globalThis.PointerEvent)=>{if(walkPointer&&walkPointer.id===event.pointerId){walkYaw-=(event.clientX-walkPointer.x)*.004;walkPitch=THREE.MathUtils.clamp(walkPitch-(event.clientY-walkPointer.y)*.003,-1.15,.65);walkPointer={id:event.pointerId,x:event.clientX,y:event.clientY};}bookHovered=hitsBook(event);renderer.domElement.style.cursor=bookHovered?'pointer':'';};
+    const bookDown=(event:globalThis.PointerEvent)=>{if(event.button!==0||live.current.bookOpen)return;if(hitsBook(event))bookPointerDown={x:event.clientX,y:event.clientY,id:event.pointerId};else if(walking){walkPointer={id:event.pointerId,x:event.clientX,y:event.clientY};renderer.domElement.setPointerCapture(event.pointerId);}};
     const bookUp=(event:globalThis.PointerEvent)=>{
+      if(renderer.domElement.hasPointerCapture(event.pointerId))renderer.domElement.releasePointerCapture(event.pointerId);walkPointer=null;
       const down=bookPointerDown;bookPointerDown=null;
       if(down&&down.id===event.pointerId&&Math.hypot(event.clientX-down.x,event.clientY-down.y)<7&&hitsBook(event))live.current.onBookOpen?.();
     };
-    const bookLeave=()=>{bookHovered=false;bookPointerDown=null;renderer.domElement.style.cursor='';};
+    const bookLeave=()=>{walkPointer=null;bookHovered=false;bookPointerDown=null;renderer.domElement.style.cursor='';};
     renderer.domElement.addEventListener('pointermove',bookMove);
     renderer.domElement.addEventListener('pointerdown',bookDown);
     renderer.domElement.addEventListener('pointerup',bookUp);
@@ -382,7 +389,7 @@ export function ThreePokerScene(props: SceneProps) {
           if (expression === 'thinking') {
             path([[57, 73], [100, 62]]); path([[151, 71], [194, 88]]); path([[98, 176], [126, 164], [156, 176]]);
             ctx.fillStyle = '#684733'; ctx.font = 'bold 42px system-ui'; ctx.fillText('?', 210, 64);
-          } else if (expression === 'fold') { path([[58, 75], [99, 88]]); path([[156, 88], [198, 75]]); path([[97, 181], [129, 165], [160, 181]]); }
+          } else if (expression === 'fold' || expression === 'sad') { path([[58, 75], [99, 88]]); path([[156, 88], [198, 75]]); path([[97, 181], [129, 165], [160, 181]]); }
           else if (expression === 'fire' || expression === 'all-in') { path([[55, 69], [100, 87]]); path([[154, 87], [199, 69]]); path([[92, 166], [166, 166], [156, 184], [102, 184], [92, 166]], '#302224', 6); path([[105, 174], [153, 174]], '#fff9ed', 8); }
           else if (expression === 'raise') { path([[54, 73], [100, 85]]); path([[154, 85], [200, 73]]); path([[93, 175], [126, 183], [168, 161]]); }
           else if (expression === 'call') { path([[57, 72], [101, 72]]); path([[155, 72], [199, 72]]); path([[107, 174], [149, 174]]); }
@@ -518,7 +525,8 @@ export function ThreePokerScene(props: SceneProps) {
       if (player.seat % 3 === 0) ball(head, hair, [-.07, .355, .08], [.24, .055, .19]);
       const face = mesh(headPlane, material(new THREE.MeshBasicMaterial({ map: faceTexture('neutral'), alphaMap: faceMask, alphaTest: .015, transparent: true, depthWrite: false, toneMapped: false })), head, [0, .12, .257]);
       face.castShadow = false;
-      const nameplate = sprite(labelTexture(player.name, player.stack.toLocaleString()), 1.25, .37, world);
+      const nameplate = sprite(labelTexture(player.name, player.stack.toLocaleString()), 1.1, .275, world);
+      nameplate.material.sizeAttenuation=false;
       const cards = new THREE.Group(); root.add(cards);
       const reaction = sprite(drawTexture(128, 128, () => {}), .42, .42, world); reaction.visible = false;
       const actor: Actor = { root, head, face, nameplate, cards, reaction, leftArm, rightArm, idlePhase: player.seat * 1.83 };
@@ -570,6 +578,10 @@ export function ThreePokerScene(props: SceneProps) {
       const side=standard('#ffffff',{map:edge,roughness:.5}),face=standard('#ffffff',{map:top,roughness:.5});
       chipPaints.set(chip.value,[side,face,face]);
     }
+    const dealerButton=new THREE.Group();world.add(dealerButton);
+    mesh(geometry(new THREE.CylinderGeometry(.14,.14,.035,32)),ivory,dealerButton,[0,0,0]);
+    const dealerArt=drawTexture(256,256,ctx=>{ctx.fillStyle='#f7efd6';ctx.fillRect(0,0,256,256);ctx.strokeStyle='#28372f';ctx.lineWidth=7;ctx.beginPath();ctx.arc(128,128,110,0,Math.PI*2);ctx.stroke();ctx.textAlign='center';ctx.fillStyle='#28372f';ctx.font='bold 32px Georgia';ctx.fillText('DEALER',128,141);});
+    const dealerFace=mesh(geometry(new THREE.CircleGeometry(.132,32)),material(new THREE.MeshBasicMaterial({map:dealerArt,toneMapped:false})),dealerButton,[0,.018,0]);dealerFace.rotation.x=-Math.PI/2;
     const instance=new THREE.Object3D();
     function fillChipStack(group:THREE.Group,amount:number){
       if(group.userData.amount===amount)return;group.userData.amount=amount;clear(group);
@@ -801,7 +813,7 @@ export function ThreePokerScene(props: SceneProps) {
         if (player) {
           const actor = actors.get(player.id) || makeActor(player);
           actor.root.position.set(x, 0, z); actor.root.rotation.y = facing;
-          actor.nameplate.position.set(x * (narrow ? .86 : .96), 2.78, z + .05); actor.nameplate.scale.set(narrow ? 1.13 : 1.25, narrow ? .34 : .37, 1);
+          actor.nameplate.position.set(x * (narrow ? .86 : .96), 2.78, z + .05); actor.nameplate.scale.set(narrow ? .23 : .24, narrow ? .067 : .07, 1);
           actor.reaction.position.set(x + .44, 2.95, z); actor.reaction.scale.setScalar(narrow ? .58 : .46);
         } else {
           const empty = new THREE.Group(); empty.position.set(x, 0, z); empty.rotation.y = facing; chair(empty); emptySeats.add(empty);
@@ -876,9 +888,9 @@ export function ThreePokerScene(props: SceneProps) {
         const face = useVideo ? actor.videoTexture! : remotePose.face?trackedFaceTexture(player.id,remotePose.face):faceTexture(expression);
         if (actor.face.material.map !== face) { actor.face.material.map = face; actor.face.material.needsUpdate = true; }
         const action = room.turnId === player.id ? 'Thinking…' : room.phase === 'showdown' && room.result?.winners.includes(player.id) ? 'WINNER' : player.sittingOut ? 'Sitting out' : player.lastAction || 'Ready';
-        const title = `${player.name}${player.seat === room.dealerSeat ? ' · D' : ''}`;
+        const title = player.name;
         const label = `${title}/${player.stack}/${action}`;
-        if (actor.label !== label) { actor.label = label; setSpriteTexture(actor.nameplate, labelTexture(title, player.stack.toLocaleString(), action, room.turnId === player.id)); }
+        if (actor.label !== label) { actor.label = label; setSpriteTexture(actor.nameplate, labelTexture(title, `${player.stack.toLocaleString()} chips`, action, room.turnId === player.id)); }
         const shown=!!room.result?.revealed.includes(player.id);
         const hole=`${room.handNo}/${player.hole.join(',')}/${player.folded}/${shown}`;
         if(actor.hole!==hole){
@@ -899,6 +911,15 @@ export function ThreePokerScene(props: SceneProps) {
       }
       if (element!.dataset.cameraFaces !== String(cameraFaces)) element!.dataset.cameraFaces = String(cameraFaces);
     }
+    const walkBlocked=()=>live.current.bookOpen||!!document.querySelector('dialog[open]');
+    const walkKeyDown=(event:KeyboardEvent)=>{
+      if(event.ctrlKey||event.metaKey||event.altKey||walkBlocked()||live.current.topDown||(event.target as HTMLElement)?.closest('input,select,textarea,[contenteditable=true]'))return;
+      const key=event.key.toLowerCase();if(!['w','a','s','d','arrowup','arrowdown','arrowleft','arrowright'].includes(key))return;
+      event.preventDefault();walkKeys.add(key);
+    };
+    const walkKeyUp=(event:KeyboardEvent)=>walkKeys.delete(event.key.toLowerCase());
+    const stopWalkingInput=()=>{walkKeys.clear();walkPointer=null;};
+    window.addEventListener('keydown',walkKeyDown);window.addEventListener('keyup',walkKeyUp);window.addEventListener('blur',stopWalkingInput);document.addEventListener('visibilitychange',stopWalkingInput);
     function animate(time: number) {
       if (disposed) return;
       // Bound GPU work when video encoding/decoding shares the device.
@@ -931,15 +952,32 @@ export function ThreePokerScene(props: SceneProps) {
       seatedPosition.set(0,seatedY,seatedZ);
       // Stand at the near rail and lean forward, keeping the room's vertical upright.
       overheadPosition.set(0,narrow?3.9:3.5,narrow?2.65:2.35);
+      if(walkBlocked()||document.hidden){walkKeys.clear();walkPointer=null;}
+      if(live.current.walkReset!==walkReset||live.current.topDown){walkReset=live.current.walkReset;if(walking){walking=false;live.current.onWalkingChange?.(false);}walkKeys.clear();}
+      const forward=(walkKeys.has('w')||walkKeys.has('arrowup')?1:0)-(walkKeys.has('s')||walkKeys.has('arrowdown')?1:0)+(walkBlocked()?0:live.current.walkInput?.forward||0);
+      const right=(walkKeys.has('d')?1:0)-(walkKeys.has('a')?1:0)+(walkBlocked()?0:live.current.walkInput?.right||0);
+      if((forward||right)&&!live.current.topDown){
+        if(!walking){walking=true;walkPosition={x:camera.position.x,z:camera.position.z};walkYaw=-currentYaw*.52;live.current.onWalkingChange?.(true);}
+        const distance=2.4*dt/1000/Math.max(1,Math.hypot(forward,right));
+        const chairs=[...actors.values()].map(actor=>({minX:actor.root.position.x-.32,maxX:actor.root.position.x+.32,minZ:actor.root.position.z-.32,maxZ:actor.root.position.z+.32}));
+        walkPosition=resolveTableWalk(walkPosition,{x:(-Math.sin(walkYaw)*forward+Math.cos(walkYaw)*right)*distance,z:(-Math.cos(walkYaw)*forward-Math.sin(walkYaw)*right)*distance},narrow?.7:1,chairs);
+      }
+      if(walking){if(walkKeys.has('arrowleft'))walkYaw+=dt*.0015;if(walkKeys.has('arrowright'))walkYaw-=dt*.0015;}
       camera.position.lerpVectors(seatedPosition,overheadPosition,topDownBlend);camera.up.copy(worldUp);
+
       const yaw=currentYaw*(narrow?.44:.52)*(1-topDownBlend);
       const baselinePitch=Math.atan2(FELT_Y-seatedY,seatedZ-.5);
       const lookPitch=baselinePitch-currentPitch*.14*(1-topDownBlend);
       seatedTarget.set(Math.sin(yaw)*10,seatedY+Math.tan(lookPitch)*10,seatedZ-10*Math.cos(yaw));
       overheadTarget.set(0,FELT_Y,1.3);viewTarget.lerpVectors(seatedTarget,overheadTarget,topDownBlend);
+      if(walking){camera.position.set(walkPosition.x,3.0,walkPosition.z);viewTarget.set(walkPosition.x-Math.sin(walkYaw)*10,3+Math.tan(walkPitch)*10,walkPosition.z-Math.cos(walkYaw)*10);}
+      hands.visible=!walking;
+      element!.dataset.walking=String(walking);
       camera.lookAt(viewTarget);
       const fov=(narrow?88:69)+6*topDownBlend;if(Math.abs(camera.fov-fov)>.02){camera.fov=fov;camera.updateProjectionMatrix();}
       updateLayout(room);processEvents(room,time);updateCards(room,time);updateActors(room,now,time);
+      const dealer=room.players.find(player=>player.seat===room.dealerSeat);dealerButton.visible=!!dealer&&room.handNo>0;
+      if(dealer)dealerButton.position.copy(playerPoint(room,dealer.id,dealer.id===room.me?-.25:-.65,dealer.id===room.me?.85:1.2,FELT_Y+.026));
       updateChipStacks(room);updateSideEffects(room,time);updateBountyPoster(room,time);animateMotions(time);
       animateArms(ownArms,room.me,time);
       renderer.render(scene, camera);
@@ -952,6 +990,7 @@ export function ThreePokerScene(props: SceneProps) {
 
     return () => {
       disposed = true; cancelAnimationFrame(animationFrame); resizeObserver.disconnect();
+      window.removeEventListener('keydown',walkKeyDown);window.removeEventListener('keyup',walkKeyUp);window.removeEventListener('blur',stopWalkingInput);document.removeEventListener('visibilitychange',stopWalkingInput);
       renderer.domElement.removeEventListener('webglcontextlost', contextLost);
       renderer.domElement.removeEventListener('pointermove',bookMove);
       renderer.domElement.removeEventListener('pointerdown',bookDown);
@@ -966,7 +1005,7 @@ export function ThreePokerScene(props: SceneProps) {
     };
   }, [props.room.code, props.room.settings.theme]);
 
-  return <div ref={host} className="three-poker-canvas" data-camera-faces="0" role="img" aria-label="First-person 3D poker table with seated human characters. Move your pointer to look around.">
+  return <div ref={host} className="three-poker-canvas" data-camera-faces="0" role="img" aria-label="First-person 3D poker table with seated human characters. Move your pointer to look around. WASD to walk around the live table.">
     <span className="sr-only">{props.room.players.filter(player => player.id !== props.room.me).map(player => `${player.name}: ${props.poses[player.id]?.face?'mirroring facial movements':EXPRESSION_LABELS[characterExpression(player, props.room, props.now)]}, ${player.lastAction || 'ready'}, ${player.stack.toLocaleString()} chips.`).join(' ')}</span>
   </div>;
 }

@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import {advancePool,createPoolGame,poolMoving,poolPockets,strikePool,type PoolGame} from '@/lib/pool-physics';
+import {poolFirstPersonView} from '@/lib/pool-controls';
 
 export const POOL_POSITION={x:-6,y:1.05,z:-3} as const;
 export const POOL_BOUNDS={minX:-7.62,maxX:-4.38,minZ:-3.92,maxZ:-2.08} as const;
@@ -8,6 +9,8 @@ export interface PoolWorld {
   group:THREE.Group;bounds:typeof POOL_BOUNDS;update:(dt:number)=>void;
   handleRaycast:(raycaster:THREE.Raycaster)=>boolean;aimAt:(raycaster:THREE.Raycaster)=>boolean;
   setActive:(active:boolean)=>void;shoot:(power:number)=>boolean;reset:()=>void;
+  setDraw:(power:number)=>void;rotateAim:(angle:number)=>void;
+  getView:()=>ReturnType<typeof poolFirstPersonView>;
   getState:()=>PoolStatus;dispose:()=>void;
 }
 /** A self-contained, local practice table. The hub owns accessible/touch shot controls. */
@@ -57,7 +60,9 @@ export function createPoolWorld(options:{scene:THREE.Scene;onStatus?:(status:Poo
     }
     const texture=new THREE.CanvasTexture(canvas);texture.colorSpace=THREE.SRGBColorSpace;textures.add(texture);return texture;
   }
-  let game:PoolGame=createPoolGame(),active=false;
+  let game:PoolGame=createPoolGame(),active=false,draw=0;
+  let stroke:{power:number;elapsed:number}|null=null;
+  let view=poolFirstPersonView({x:POOL_POSITION.x-.76,z:POOL_POSITION.z},{x:1,z:0});
   const aim=new THREE.Vector2(1,0),axis=new THREE.Vector3();
   for(const b of game.balls){
     const mesh=new THREE.Mesh(sphere,material(new THREE.MeshStandardMaterial({map:ballTexture(b.id),roughness:.22,metalness:.04})));
@@ -68,12 +73,18 @@ export function createPoolWorld(options:{scene:THREE.Scene;onStatus?:(status:Poo
   const cue=new THREE.Mesh(geometry(new THREE.CylinderGeometry(.011,.018,1.22,10)),material(new THREE.MeshStandardMaterial({color:'#c8a16b',roughness:.7})));group.add(cue);
   const tip=new THREE.Mesh(geometry(new THREE.CylinderGeometry(.012,.012,.025,10)),material(new THREE.MeshStandardMaterial({color:'#60a4bf'})));
   tip.position.y=.61;cue.add(tip);
+  // A bridge hand and a back hand hold the same cue that the player draws.
+  const handPaint=material(new THREE.MeshStandardMaterial({color:'#eac49c',roughness:.65}));
+  const handShape=geometry(new THREE.SphereGeometry(1,16,10));
+  for(const [y,z]of [[.42,-.045],[-.39,.045]]){
+    const hand=new THREE.Mesh(handShape,handPaint);hand.position.set(.035,y,z);hand.scale.set(.055,.1,.045);cue.add(hand);
+  }
   const feltPlane=new THREE.Plane(new THREE.Vector3(0,1,0),-POOL_POSITION.y);
   const point=new THREE.Vector3(),yAxis=new THREE.Vector3(0,1,0),direction=new THREE.Vector3();
   let lastStatus='';
   function getState():PoolStatus {
-    const moving=poolMoving(game),pocketed=game.balls.filter(b=>b.id>0&&b.pocketed).length;
-    return{moving,pocketed,shots:game.shots,scratched:game.scratched,message:moving?'Balls rolling…':pocketed===15?'Rack cleared. Reset for another game.':game.scratched?'Scratch. Cue ball returned — aim your next shot.':'Aim on the felt, choose power, then shoot.'};
+    const moving=poolMoving(game)||!!stroke,pocketed=game.balls.filter(b=>b.id>0&&b.pocketed).length;
+    return{moving,pocketed,shots:game.shots,scratched:game.scratched,message:stroke?'Striking…':moving?'Balls rolling…':pocketed===15?'Rack cleared. Reset for another game.':game.scratched?'Scratch. Cue ball returned — line up your next shot.':'Move to aim · pull down and release to shoot.'};
   }
   function report(){const state=getState(),key=JSON.stringify(state);if(key!==lastStatus){lastStatus=key;options.onStatus?.(state);}}
   function updateGuide(){
@@ -93,12 +104,16 @@ export function createPoolWorld(options:{scene:THREE.Scene;onStatus?:(status:Poo
     }
     const p=lineGeometry.getAttribute('position') as THREE.BufferAttribute;
     p.setXYZ(0,ball.x,POOL_POSITION.y+r,ball.z);p.setXYZ(1,ball.x+dx*Math.max(.02,distance),POOL_POSITION.y+r,ball.z+dz*Math.max(.02,distance));p.needsUpdate=true;guide.computeLineDistances();
-    cue.position.set(ball.x-dx*.76,POOL_POSITION.y+r,ball.z-dz*.76);
+    const cueOffset=.76+.55*(stroke?stroke.power*(1-Math.min(1,stroke.elapsed/.14))-.18*Math.min(1,stroke.elapsed/.14):draw);
+    cue.position.set(ball.x-dx*cueOffset,POOL_POSITION.y+r,ball.z-dz*cueOffset);
     direction.set(dx,0,dz);cue.quaternion.setFromUnitVectors(yAxis,direction);
+    if(!stroke)view=poolFirstPersonView({x:POOL_POSITION.x+ball.x,z:POOL_POSITION.z+ball.z},{x:dx,z:dz});
   }
-  function setActive(value:boolean){if(active===value)return;active=value;updateGuide();options.onPlayingChange?.(active);report();}
+  function setDraw(power:number){if(active&&!poolMoving(game)&&!stroke)draw=Math.max(0,Math.min(1,power));else draw=0;updateGuide();}
+  function rotateAim(angle:number){if(!active||poolMoving(game)||stroke)return;aim.rotateAround(new THREE.Vector2(),angle);updateGuide();}
+  function setActive(value:boolean){if(active===value)return;active=value;draw=0;updateGuide();options.onPlayingChange?.(active);report();}
   function aimAt(raycaster:THREE.Raycaster){
-    if(!active||poolMoving(game)||!raycaster.ray.intersectPlane(feltPlane,point))return false;
+    if(!active||poolMoving(game)||stroke||!raycaster.ray.intersectPlane(feltPlane,point))return false;
     group.worldToLocal(point);
     if(Math.abs(point.x)>game.config.halfWidth+.05||Math.abs(point.z)>game.config.halfDepth+.05)return false;
     const b=game.balls[0],dx=point.x-b.x,dz=point.z-b.z;
@@ -111,6 +126,7 @@ export function createPoolWorld(options:{scene:THREE.Scene;onStatus?:(status:Poo
     setActive(true);return true;
   }
   function update(dt:number){
+    if(stroke){stroke.elapsed+=Math.max(0,dt);if(stroke.elapsed>=.14){strikePool(game,aim.x,aim.y,stroke.power);stroke=null;draw=0;}}
     advancePool(game,dt);
     for(const b of game.balls){
       const mesh=ballMeshes.get(b.id)!;
@@ -122,10 +138,10 @@ export function createPoolWorld(options:{scene:THREE.Scene;onStatus?:(status:Poo
     }
     updateGuide();report();
   }
-  function shoot(power:number){if(!active)return false;const result=strikePool(game,aim.x,aim.y,power);updateGuide();report();return result;}
-  function reset(){game=createPoolGame();aim.set(1,0);for(const mesh of ballMeshes.values())mesh.rotation.set(0,0,0);update(0);}
+  function shoot(power:number){if(!active||poolMoving(game)||stroke||!Number.isFinite(power)||power<.04)return false;stroke={power:Math.min(1,power),elapsed:0};draw=stroke.power;updateGuide();report();return true;}
+  function reset(){game=createPoolGame();stroke=null;draw=0;aim.set(1,0);for(const mesh of ballMeshes.values())mesh.rotation.set(0,0,0);update(0);}
   update(0);
-  return{group,bounds:POOL_BOUNDS,update,handleRaycast,aimAt,setActive,shoot,reset,getState,dispose:()=>{
+  return{group,bounds:POOL_BOUNDS,update,handleRaycast,aimAt,setActive,shoot,reset,setDraw,rotateAim,getView:()=>view,getState,dispose:()=>{
     group.removeFromParent();for(const g of geometries)g.dispose();for(const m of materials)m.dispose();for(const t of textures)t.dispose();
   }};
 }

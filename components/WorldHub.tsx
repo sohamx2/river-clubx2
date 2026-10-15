@@ -3,6 +3,7 @@
 import {useEffect, useRef, useState} from 'react';
 import * as THREE from 'three';
 import {createPoolWorld, POOL_BOUNDS, POOL_POSITION} from '@/components/pool-world';
+import {cuePullFromDrag} from '@/lib/pool-controls';
 import {resolveHubMovement, type HubObstacle} from '@/lib/hub-controls';
 import '@/app/world-hub.css';
 
@@ -14,12 +15,10 @@ interface WorldHubProps {
   onTableView: () => void;
 }
 interface PoolStatus {moving:boolean;pocketed:number;shots:number;scratched:boolean;message:string}
-interface HubCommands {enter:()=>void;interact:()=>void;leavePool:()=>void;shoot:(power:number)=>void;resetPool:()=>void;move:(key:string,pressed:boolean)=>void}
+interface HubCommands {enter:()=>void;interact:()=>void;leavePool:()=>void;beginPull:()=>void;releasePull:()=>void;cancelPull:()=>void;resetPool:()=>void;move:(key:string,pressed:boolean)=>void}
 const INITIAL_POOL:PoolStatus={moving:false,pocketed:0,shots:0,scratched:false,message:'Aim on the felt, then take your shot.'};
 const BAR={x:4.2,z:-6.8};
 const START=new THREE.Vector3(0,1.72,7.2);
-const POOL_EYE=new THREE.Vector3(POOL_POSITION.x,3.6,POOL_POSITION.z+2.5);
-const POOL_TARGET=new THREE.Vector3(POOL_POSITION.x,POOL_POSITION.y,POOL_POSITION.z);
 
 /** The lobby is a place you enter. Only room/game state lives outside the world. */
 export function WorldHub(props:WorldHubProps) {
@@ -32,7 +31,7 @@ export function WorldHub(props:WorldHubProps) {
   const [near,setNear]=useState<'bar'|'pool'|null>(null);
   const [poolActive,setPoolActive]=useState(false);
   const [poolStatus,setPoolStatus]=useState<PoolStatus>(INITIAL_POOL);
-  const [power,setPower]=useState(.55);
+  const [power,setPower]=useState(0);
   const [hint,setHint]=useState('');
 
   useEffect(()=>{
@@ -129,7 +128,7 @@ export function WorldHub(props:WorldHubProps) {
     for(const z of [2.3,5]){tube(brass,scene,[7.3,.35,z],[.055,.7,.055]);tube(darkWood,scene,[7.3,.78,z],[.62,.12,.62]);}
     const rug=standard('#423830');box(rug,scene,[.5,.018,6],[5.6,.016,2.7]);for(const x of [-2.17,3.17])box(standard('#957b51'),scene,[x,.028,6],[.035,.01,2.5]);
     box(darkWood,scene,[0,1.5,9.8],[2.45,3.1,.18]);box(standard('#263d32'),scene,[0,1.5,9.68],[2.12,2.8,.10]);for(const x of [-.53,.53])box(standard('#96a388',{transparent:true,opacity:.17}),scene,[x,2.12,9.61],[.76,.9,.025]);orb(brass,scene,[.78,1.25,9.56],[.04,.04,.04]);
-    sign('POOL','A LITTLE PRACTICE BETWEEN HANDS',2.35,1.18,[-9.79,2.35,-3],Math.PI/2);
+    sign('POOL','PULL UP FOR A GAME',2.35,1.18,[-9.79,2.35,-3],Math.PI/2);
     sign('TAKE YOUR TIME','THE NIGHT IS STILL YOUNG',2.1,1.05,[9.78,2.55,4.1],-Math.PI/2);
     // Low-cost warm wall fixtures, with no full-screen post processing.
     for(const side of [-1,1])for(const z of [-6,2,7]){box(brass,scene,[side*9.7,2.6,z],[.12,.6,.18]);orb(warmGlow,scene,[side*9.56,2.58,z],[.1,.21,.1]);const glow=new THREE.PointLight('#e9a861',6,3.8,2);glow.position.set(side*9.3,2.6,z);scene.add(glow);}
@@ -137,6 +136,7 @@ export function WorldHub(props:WorldHubProps) {
     const stoolObstacles=[-3.4,-1.15,1.15,3.4].map(offset=>({minX:BAR.x+offset-.34,maxX:BAR.x+offset+.34,minZ:BAR.z+1.56,maxZ:BAR.z+2.24}));
     const obstacles:HubObstacle[]=[{minX:-2,maxX:3.8,minZ:-.6,maxZ:2.6},{minX:-.4,maxX:8.8,minZ:-7.66,maxZ:-5.94},POOL_BOUNDS,{minX:8.2,maxX:9.7,minZ:1.2,maxZ:6.2},...chairObstacles,...stoolObstacles];
     let poolMode=false,disposed=false,frame=0,lastFrame=0,lastDraw=0,yaw=0,pitch=-.045,walkingPhase=0,cinematicStart=-1,cinematicDone=live.current.entered;
+    let drawPower=0,pullStarted:number|null=null,poolPointerX:number|null=null;
     let nearValue:'bar'|'pool'|null=null;
     const held=new Set<string>();
     const player=START.clone();
@@ -148,30 +148,56 @@ export function WorldHub(props:WorldHubProps) {
     let dragging=false,lastPointerX=0,lastPointerY=0,downX=0,downY=0,downTime=0;
     let hintTimer:ReturnType<typeof setTimeout>|undefined;
     const blocked=()=>Boolean(live.current.paused||document.querySelector('dialog[open], [role="dialog"][aria-modal="true"]'));
+    const setDraw=(value:number)=>{drawPower=value;pool.setDraw(value);setPower(previous=>Math.abs(previous-value)>.005?value:previous);};
+    const cancelPull=()=>{pullStarted=null;setDraw(0);};
+    const beginPull=()=>{if(!blocked()&&!pool.getState().moving){pullStarted=performance.now();setDraw(0);}};
+    const releasePull=()=>{pullStarted=null;if(drawPower>=.04&&!blocked())pool.shoot(drawPower);setDraw(0);};
     const showHint=(message:string)=>{setHint(message);if(hintTimer)clearTimeout(hintTimer);hintTimer=setTimeout(()=>setHint(''),3500);};
     function interact(){
       if(!live.current.entered||blocked())return;
       if(poolMode)return;
       if(nearValue==='bar'){held.clear();dragging=false;live.current.onBartender();return;}
-      if(nearValue==='pool'){pool.setActive(true);return;}
+      if(nearValue==='pool'){poolPointerX=null;pool.setActive(true);return;}
       showHint('Walk up to the bar to host or join a poker table.');
     }
     commands.current={
       enter:()=>{if(cinematicStart>=0||cinematicDone)return;cinematicStart=performance.now();setEntering(true);},
       interact,
-      leavePool:()=>{pool.setActive(false);held.clear();},
-      shoot:value=>{pool.shoot(value);},resetPool:()=>pool.reset(),
+      leavePool:()=>{cancelPull();pool.setActive(false);held.clear();},
+      beginPull,releasePull,cancelPull,resetPool:()=>pool.reset(),
       move:(key,pressed)=>{if(pressed)held.add(key);else held.delete(key);},
     };
-    const resize=()=>{const width=element.clientWidth,height=element.clientHeight;if(!width||!height)return;renderer.setSize(width,height,false);camera.aspect=width/height;camera.fov=width<650?(poolMode?96:74):65;camera.updateProjectionMatrix();};resize();const observer=new ResizeObserver(resize);observer.observe(element);
+    const resize=()=>{const width=element.clientWidth,height=element.clientHeight;if(!width||!height)return;renderer.setSize(width,height,false);camera.aspect=width/height;camera.fov=poolMode?(width<650?74:60):width<650?74:65;camera.updateProjectionMatrix();};resize();const observer=new ResizeObserver(resize);observer.observe(element);
     function rayAt(clientX:number,clientY:number){const bounds=renderer.domElement.getBoundingClientRect();pointer.set((clientX-bounds.left)/bounds.width*2-1,-(clientY-bounds.top)/bounds.height*2+1);raycaster.setFromCamera(pointer,camera);return raycaster;}
-    const pointerDown=(event:PointerEvent)=>{if(!live.current.entered||blocked()||event.button>0)return;downX=lastPointerX=event.clientX;downY=lastPointerY=event.clientY;downTime=performance.now();if(poolMode){pool.aimAt(rayAt(event.clientX,event.clientY));return;}dragging=true;renderer.domElement.setPointerCapture(event.pointerId);};
-    const pointerMove=(event:PointerEvent)=>{if(!live.current.entered||blocked())return;if(poolMode){pool.aimAt(rayAt(event.clientX,event.clientY));return;}if(!dragging)return;yaw-=(event.clientX-lastPointerX)*.0034;pitch=THREE.MathUtils.clamp(pitch-(event.clientY-lastPointerY)*.0028,-.88,.82);lastPointerX=event.clientX;lastPointerY=event.clientY;};
-    const pointerUp=(event:PointerEvent)=>{const wasDragging=dragging;dragging=false;if(renderer.domElement.hasPointerCapture(event.pointerId))renderer.domElement.releasePointerCapture(event.pointerId);if(!wasDragging||blocked()||poolMode||Math.hypot(event.clientX-downX,event.clientY-downY)>8||performance.now()-downTime>550)return;const ray=rayAt(event.clientX,event.clientY);if(ray.intersectObject(barInteraction,true).length){if(nearValue==='bar')interact();else showHint('The bartender is at the back counter. Walk a little closer.');}else if(ray.intersectObject(pool.group,true).length){if(nearValue==='pool'){pool.handleRaycast(ray);held.clear();}else showHint('Walk closer to the pool table to play.');}};
-    const cancelPointer=()=>{dragging=false;};
-    const keyDown=(event:KeyboardEvent)=>{if(!live.current.entered||blocked()||event.metaKey||event.ctrlKey||event.altKey)return;const target=event.target as HTMLElement|null;if(target?.closest('input,textarea,select,[contenteditable="true"]'))return;const key=event.key.toLowerCase();if(['w','a','s','d','arrowup','arrowdown','arrowleft','arrowright'].includes(key)){if(!poolMode){held.add(key);event.preventDefault();}}else if(key==='e'&&!event.repeat){interact();event.preventDefault();}else if(key==='escape'&&poolMode){pool.setActive(false);event.preventDefault();}};
-    const keyUp=(event:KeyboardEvent)=>held.delete(event.key.toLowerCase());
-    const blur=()=>{held.clear();dragging=false;};
+    const pointerDown=(event:PointerEvent)=>{
+      if(!live.current.entered||blocked()||event.button>0)return;
+      downX=lastPointerX=event.clientX;downY=lastPointerY=event.clientY;downTime=performance.now();
+      if(poolMode&&pool.getState().moving)return;
+      dragging=true;renderer.domElement.setPointerCapture(event.pointerId);
+      if(poolMode){pullStarted=null;setDraw(0);poolPointerX=event.clientX;}
+    };
+    const pointerMove=(event:PointerEvent)=>{
+      if(!live.current.entered||blocked())return;
+      if(poolMode){
+        if(dragging){if(Math.abs(event.clientY-downY)<12&&poolPointerX!==null)pool.rotateAim((event.clientX-poolPointerX)*.004);setDraw(cuePullFromDrag(downY,event.clientY,element.clientHeight));}
+        else if(poolPointerX!==null)pool.rotateAim((event.clientX-poolPointerX)*.004);
+        poolPointerX=event.clientX;return;
+      }
+      if(!dragging)return;yaw-=(event.clientX-lastPointerX)*.0034;pitch=THREE.MathUtils.clamp(pitch-(event.clientY-lastPointerY)*.0028,-.88,.82);lastPointerX=event.clientX;lastPointerY=event.clientY;
+    };
+    const pointerUp=(event:PointerEvent)=>{
+      const wasDragging=dragging;dragging=false;
+      if(renderer.domElement.hasPointerCapture(event.pointerId))renderer.domElement.releasePointerCapture(event.pointerId);
+      if(poolMode){if(wasDragging&&!blocked())releasePull();else cancelPull();return;}
+      if(!wasDragging||blocked()||Math.hypot(event.clientX-downX,event.clientY-downY)>8||performance.now()-downTime>550)return;
+      const ray=rayAt(event.clientX,event.clientY);
+      if(ray.intersectObject(barInteraction,true).length){if(nearValue==='bar')interact();else showHint('The bartender is at the back counter. Walk a little closer.');}
+      else if(ray.intersectObject(pool.group,true).length){if(nearValue==='pool'){poolPointerX=null;pool.handleRaycast(ray);held.clear();}else showHint('Walk closer to the pool table to play.');}
+    };
+    const cancelPointer=()=>{dragging=false;cancelPull();poolPointerX=null;};
+    const keyDown=(event:KeyboardEvent)=>{if(!live.current.entered||blocked()||event.metaKey||event.ctrlKey||event.altKey)return;const target=event.target as HTMLElement|null;if(target?.closest('input,textarea,select,[contenteditable="true"]'))return;const key=event.key.toLowerCase();if(poolMode&&(key==='arrowleft'||key==='arrowright')){pool.rotateAim(key==='arrowleft'?-.035:.035);event.preventDefault();return;}if(poolMode&&event.code==='Space'){if(target?.closest('button,a,[role=button]')&&!target.closest('.hub-pool-shoot'))return;if(!event.repeat)beginPull();event.preventDefault();return;}if(['w','a','s','d','arrowup','arrowdown','arrowleft','arrowright'].includes(key)){if(!poolMode){held.add(key);event.preventDefault();}}else if(key==='e'&&!event.repeat){interact();event.preventDefault();}else if(key==='escape'&&poolMode){cancelPull();pool.setActive(false);event.preventDefault();}};
+    const keyUp=(event:KeyboardEvent)=>{held.delete(event.key.toLowerCase());if(poolMode&&event.code==='Space'&&pullStarted!==null){releasePull();event.preventDefault();}};
+    const blur=()=>{held.clear();dragging=false;cancelPull();};
     renderer.domElement.addEventListener('pointerdown',pointerDown);renderer.domElement.addEventListener('pointermove',pointerMove);renderer.domElement.addEventListener('pointerup',pointerUp);renderer.domElement.addEventListener('pointercancel',cancelPointer);
     window.addEventListener('keydown',keyDown);window.addEventListener('keyup',keyUp);window.addEventListener('blur',blur);document.addEventListener('visibilitychange',blur);
     const contextLost=(event:Event)=>{event.preventDefault();cancelAnimationFrame(frame);held.clear();dragging=false;setFailed(true);};renderer.domElement.addEventListener('webglcontextlost',contextLost);
@@ -179,15 +205,16 @@ export function WorldHub(props:WorldHubProps) {
     function tick(time:number){
       if(disposed)return;frame=requestAnimationFrame(tick);const dt=Math.min((time-lastFrame)/1000||0,.045);lastFrame=time;if(document.hidden)return;
       pool.update(dt);
-      if(blocked()){held.clear();dragging=false;}
+      if(blocked()){held.clear();dragging=false;if(pullStarted!==null||drawPower)cancelPull();}
+      if(pullStarted!==null)setDraw(Math.min(1,(performance.now()-pullStarted)/1100));
       const active=live.current.entered||cinematicDone;
       if(!active&&cinematicStart<0){camera.position.copy(menuEye);if(!reduced)camera.position.x+=Math.sin(time*.00014)*.16;camera.lookAt(menuTarget);}
       else if(!active&&cinematicStart>=0){const progress=reduced?1:Math.min(1,(time-cinematicStart)/1750),ease=progress*progress*(3-2*progress);camera.position.lerpVectors(menuEye,START,ease);lookTarget.lerpVectors(menuTarget,new THREE.Vector3(0,1.4,-3),ease);camera.lookAt(lookTarget);if(progress>=1){cinematicDone=true;live.current.onEnter();}}
       else{
         if(!cinematicDone)cinematicDone=true;
         if(!blocked()&&!poolMode){const forward=(held.has('w')||held.has('arrowup')?1:0)-(held.has('s')||held.has('arrowdown')?1:0),right=(held.has('d')||held.has('arrowright')?1:0)-(held.has('a')||held.has('arrowleft')?1:0);if(forward||right){const length=Math.hypot(forward,right);const speed=2.7*dt/length;const next=resolveHubMovement({x:player.x,z:player.z},{x:(-Math.sin(yaw)*forward+Math.cos(yaw)*right)*speed,z:(-Math.cos(yaw)*forward-Math.sin(yaw)*right)*speed},obstacles);player.x=next.x;player.z=next.z;walkingPhase+=dt*8;}else walkingPhase=0;}
-        const bodyY=START.y+(!reduced&&!poolMode?Math.sin(walkingPhase)*.012:0);const targetEye=poolMode?POOL_EYE:new THREE.Vector3(player.x,bodyY,player.z);camera.position.lerp(targetEye,reduced?1:1-Math.exp(-dt*9));
-        if(poolMode){previousRotation.copy(camera.quaternion);camera.lookAt(POOL_TARGET.x,camera.aspect<.8?-.15:POOL_TARGET.y,POOL_TARGET.z);desiredRotation.copy(camera.quaternion);camera.quaternion.copy(previousRotation).slerp(desiredRotation,reduced?1:1-Math.exp(-dt*9));}else{const targetQuaternion=new THREE.Quaternion().setFromEuler(new THREE.Euler(pitch,yaw,0,'YXZ'));camera.quaternion.slerp(targetQuaternion,reduced?1:1-Math.exp(-dt*14));}
+        const bodyY=START.y+(!reduced&&!poolMode?Math.sin(walkingPhase)*.012:0);const poolView=pool.getView();const targetEye=poolMode?new THREE.Vector3(poolView.eye.x,poolView.eye.y,poolView.eye.z):new THREE.Vector3(player.x,bodyY,player.z);camera.position.lerp(targetEye,reduced?1:1-Math.exp(-dt*9));
+        if(poolMode){previousRotation.copy(camera.quaternion);camera.lookAt(poolView.target.x,poolView.target.y,poolView.target.z);desiredRotation.copy(camera.quaternion);camera.quaternion.copy(previousRotation).slerp(desiredRotation,reduced?1:1-Math.exp(-dt*9));}else{const targetQuaternion=new THREE.Quaternion().setFromEuler(new THREE.Euler(pitch,yaw,0,'YXZ'));camera.quaternion.slerp(targetQuaternion,reduced?1:1-Math.exp(-dt*14));}
         const barDistance=Math.hypot(player.x-BAR.x,player.z-(BAR.z+1.5));const poolDistance=Math.hypot(player.x-POOL_POSITION.x,player.z-POOL_POSITION.z);
         const nextNear=barDistance<3.35&&player.z>BAR.z+.75?'bar':poolDistance<3.2?'pool':null;
         if(nextNear!==nearValue){nearValue=nextNear;setNear(nextNear);}
@@ -214,7 +241,7 @@ export function WorldHub(props:WorldHubProps) {
       {!poolActive&&<div className={`hub-interact ${near?'available':''}`} aria-live="polite">{near?<><span className="hub-interact-name">{near==='bar'?'THE BARTENDER':'THE POOL TABLE'}</span><button onClick={()=>commands.current?.interact()}><kbd>E</kbd>{near==='bar'?'Talk to the bartender':'Play a little pool'}<span aria-hidden>↗</span></button><small>{near==='bar'?'Host a room · Join your friends':'Local practice · Real ball physics'}</small></>:<span className="hub-explore-hint">Drag to look around</span>}</div>}
       {!poolActive&&<div className="hub-walk-guide" aria-label="Movement instructions"><span className="hub-key-cluster"><kbd>W</kbd><span><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd></span></span><span>Walk around<br/><small>Drag to look · E to interact</small></span></div>}
       {!poolActive&&<div className="hub-touch-walk" aria-label="Touch movement controls">{[{key:'w',label:'Walk forward',symbol:'↑'},{key:'a',label:'Walk left',symbol:'←'},{key:'s',label:'Walk backward',symbol:'↓'},{key:'d',label:'Walk right',symbol:'→'}].map(({key,label,symbol})=><button key={key} className={`hub-move-${key}`} aria-label={label} onPointerDown={event=>{event.preventDefault();event.currentTarget.setPointerCapture(event.pointerId);mobileMove(key,true);}} onPointerUp={()=>mobileMove(key,false)} onPointerCancel={()=>mobileMove(key,false)} onLostPointerCapture={()=>mobileMove(key,false)}>{symbol}</button>)}</div>}
-      {poolActive&&<aside className="hub-pool-controls" aria-label="Pool practice controls"><div className="hub-pool-title"><span><small>BETWEEN HANDS</small><strong>A little pool.</strong></span><button aria-label="Leave pool table" onClick={()=>commands.current?.leavePool()}>✕</button></div><p aria-live="polite">{poolStatus.message}</p><div className="hub-pool-score"><span>{poolStatus.pocketed} / 15 <small>POCKETED</small></span><span>{poolStatus.shots} <small>SHOTS</small></span><button onClick={()=>commands.current?.resetPool()}>Re-rack</button></div><label>Shot power <span>{Math.round(power*100)}%</span><input type="range" min="10" max="100" step="1" value={Math.round(power*100)} onChange={event=>setPower(Number(event.target.value)/100)} disabled={poolStatus.moving}/></label><button className="hub-pool-shoot" onClick={()=>commands.current?.shoot(power)} disabled={poolStatus.moving}>{poolStatus.moving?'Balls in motion…':'Take the shot'} <span aria-hidden>↗</span></button><small className="hub-pool-note">Tap the felt to aim · Local solo practice · Esc to leave</small></aside>}
+      {poolActive&&<aside className="hub-pool-controls" aria-label="Pool practice controls"><div className="hub-pool-title"><span><small>FIRST PERSON POOL</small><strong>A little pool.</strong></span><button aria-label="Leave pool table" onClick={()=>commands.current?.leavePool()}>✕</button></div><p aria-live="polite">{poolStatus.message}</p><div className="hub-pool-score"><span>{poolStatus.pocketed} / 15 <small>POCKETED</small></span><span>{poolStatus.shots} <small>SHOTS</small></span><button onClick={()=>commands.current?.resetPool()}>Re-rack</button></div><div className="pool-draw-meter" role="meter" aria-label="Cue pullback" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(power*100)}><span style={{width:`${power*100}%`}}/></div><button className="hub-pool-shoot" onPointerDown={event=>{event.preventDefault();event.currentTarget.setPointerCapture(event.pointerId);commands.current?.beginPull();}} onPointerUp={()=>commands.current?.releasePull()} onKeyDown={event=>{if(event.key==='Enter'){event.preventDefault();if(!event.repeat)commands.current?.beginPull();}}} onKeyUp={event=>{if(event.key==='Enter'){event.preventDefault();commands.current?.releasePull();}}} onPointerCancel={()=>commands.current?.cancelPull()} onLostPointerCapture={()=>commands.current?.cancelPull()} disabled={poolStatus.moving}>{poolStatus.moving?'Balls in motion…':power>.01?'Release to shoot':'Hold to draw cue'} <span aria-hidden>↗</span></button><small className="hub-pool-note">Move pointer to aim · drag down on the table & release to shoot<br/>Or hold Space / the button · Local practice · Esc to leave</small></aside>}
     </>}
     {!props.entered&&!failed&&<footer className="hub-menu-bottom"><span>2–10 FRIENDS <i/> NO HOUSE. JUST US.</span><span>LEAVE THE WORLD AT THE DOOR.</span></footer>}
   </section>;
